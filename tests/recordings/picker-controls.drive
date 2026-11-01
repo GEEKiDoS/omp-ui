@@ -1,0 +1,14 @@
+# Synthetic controls only: tsp-replay picker-layouts.jsonl --at 1 --drive this-file
+resize 2200 1640
+scale 1
+wait 100
+# Main input is behind the modal scrim: this must not emit focus.
+click 50 85
+click 410 1513
+click 1950 1547
+# Disabled action must not emit an event.
+click 718 1593
+click 570 1593
+log build-content/picker-controls-events.txt
+shot build-content/picker-controls.png
+quit

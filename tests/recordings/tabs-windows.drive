@@ -1,0 +1,55 @@
+# Run: omp-ui D:/repo/omp-ui --drive tests/recordings/tabs-windows.drive
+# All windows remain hidden; no OS cursor, activation, or desktop input.
+resize 1100 820
+scale 1
+waitfor 30000 What are we cooking
+tab D:/repo/omp-ui/src
+waitfor 30000 What are we cooking
+tab D:/repo/omp-ui/docs
+waitfor 30000 What are we cooking
+text /settings
+key enter
+waitfor 15000 omp settings
+wait 500
+wheel 1000 550 -5
+wait 300
+nodes build-content/tabs-window-scroll-before.json
+tabs build-content/tabs-windows-before.json
+key ctrl+alt+shift+t
+wait 500
+tabs build-content/tabs-windows-split.json
+shot build-content/tabs-window-split.png
+resize 900 700
+wait 500
+tabs build-content/tabs-windows-resized.json
+resize 1100 820
+wait 300
+window 1
+key ctrl+alt+shift+m
+wait 500
+tabs build-content/tabs-windows-merged.json
+key ctrl+shift+3
+wait 300
+nodes build-content/tabs-window-scroll-after.json
+shot build-content/tabs-window-merged.png
+tabdrag 1 3 1 1
+wait 300
+tabs build-content/tabs-windows-reordered.json
+tabdrag 1 1 new 1
+wait 500
+tabs build-content/tabs-windows-drag-split.json
+tabdrag 2 1 1 2
+wait 500
+tabs build-content/tabs-windows-drag-merged.json
+shot build-content/tabs-window-drag-merged.png
+key esc
+wait 300
+newwindow
+wait 300
+window 1
+key ctrl+shift+w
+wait 300
+key ctrl+shift+w
+wait 300
+tabs build-content/tabs-windows-surviving.json
+key ctrl+shift+w

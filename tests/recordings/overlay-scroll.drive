@@ -1,0 +1,10 @@
+# Synthetic overflowing caret overlay: picker-layouts.jsonl --at 15
+resize 1100 820
+scale 1
+wait 100
+shot build-content/overlay-scroll-before.png
+wheel 400 400 -24
+wait 150
+shot build-content/overlay-scroll-after.png
+log build-content/overlay-scroll-events.txt
+quit

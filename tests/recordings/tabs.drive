@@ -1,0 +1,73 @@
+# Real omp, no model prompts; only hidden in-app input. Run from repository root.
+resize 1100 820
+scale 1
+waitfor 30000 What are we cooking
+wait 1500
+tabs build-content/tabs-one.json
+wait 8000
+tab D:/repo/omp-ui/src
+waitfor 30000 What are we cooking
+tab D:/repo/omp-ui/docs
+waitfor 30000 What are we cooking
+wait 1500
+tabs build-content/tabs-three.json
+shot build-content/tabs-expanded-1x.png
+wait 8000
+resize 1300 900
+wait 800
+tabs build-content/tabs-resized.json
+key ctrl+shift+1
+wait 300
+key ctrl+shift+3
+wait 300
+text /settings
+key enter
+waitfor 15000 omp settings
+wait 500
+wheel 1000 550 -5
+wait 300
+nodes build-content/tabs-scroll-before.json
+shot build-content/tabs-scroll-before.png
+key ctrl+shift+1
+wait 300
+key ctrl+shift+3
+wait 300
+nodes build-content/tabs-scroll-after.json
+shot build-content/tabs-scroll-after.png
+key esc
+wait 300
+key ctrl+shift+w
+wait 500
+tabs build-content/tabs-closed.json
+tabcmd {"cwd":"D:/repo/omp-ui","argv":["pwsh","-NoLogo","-NoProfile","-Command","[Console]::Write([char]27+']0;Notification demo'+[char]7+[char]27+']9;M7 notification'+[char]7); Start-Sleep -Seconds 45"],"active":false}
+tabcmd {"cwd":"D:/repo/omp-ui/docs","argv":["pwsh","-NoLogo","-NoProfile","-Command","[Console]::WriteLine('M7 retained exit output'); exit 7"],"active":false}
+wait 1500
+tabs build-content/tabs-attention.json
+shot build-content/tabs-attention-1x.png
+resize 2200 1640
+scale 2
+wait 500
+shot build-content/tabs-expanded-2x.png
+key ctrl+shift+b
+wait 500
+shot build-content/tabs-collapsed-2x.png
+resize 1100 820
+scale 1
+wait 500
+shot build-content/tabs-collapsed-1x.png
+key ctrl+shift+4
+wait 500
+shot build-content/tabs-exited.png
+key enter
+wait 1200
+tabs build-content/tabs-restarted.json
+key ctrl+shift+w
+wait 300
+key ctrl+shift+3
+wait 300
+key ctrl+shift+w
+wait 300
+key ctrl+shift+b
+wait 300
+tabs build-content/tabs-final.json
+quit

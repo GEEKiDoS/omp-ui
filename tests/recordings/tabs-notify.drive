@@ -1,0 +1,18 @@
+# OSC 777 and chunked OSC 99, without prompts or desktop notification APIs.
+resize 1100 820
+scale 1
+waitfor 30000 What are we cooking
+tab D:/repo/omp-ui/src
+waitfor 30000 What are we cooking
+tabcmd {"cwd":"D:/repo/omp-ui","argv":["pwsh","-NoLogo","-NoProfile","-Command","[Console]::Write([char]27+']0;OSC 777'+[char]7+[char]27+']777;notify;Title;Body'+[char]7); Start-Sleep -Seconds 30"],"active":false}
+tabcmd {"cwd":"D:/repo/omp-ui","argv":["pwsh","-NoLogo","-NoProfile","-Command","[Console]::Write([char]27+']0;OSC 99'+[char]7+[char]27+']99;i=m7:d=0;Partial'+[char]7); Start-Sleep -Seconds 4; [Console]::Write([char]27+']99;i=m7:d=1;Complete'+[char]7); Start-Sleep -Seconds 30"],"active":false}
+wait 1500
+tabs build-content/tabs-notify-partial.json
+wait 3500
+tabs build-content/tabs-notify-complete.json
+mclick 40 204
+wait 300
+mclick 40 204
+wait 300
+tabs build-content/tabs-middle-closed.json
+quit

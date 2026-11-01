@@ -1,0 +1,46 @@
+# Build & packaging directories
+/build/
+/build-*/
+/out/
+/dist/
+/_CPack_Packages/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# Compiled binaries & symbols
+*.obj
+*.o
+*.lib
+*.a
+*.dll
+*.so
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.exp
+!third_party/conpty/**
+
+# Editor & IDE
+.vs/
+.vscode/
+.idea/
+.cache/
+*.suo
+*.user
+*.sln
+*.vcxproj*
+
+# OS
+.DS_Store
+Thumbs.db

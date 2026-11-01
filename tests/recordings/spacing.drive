@@ -1,0 +1,41 @@
+# Non-mutating real omp spacing acceptance; hidden output-pixel harness only.
+resize 1100 820
+scale 1
+waitfor 20000 What are we cooking
+wait 1500
+shot build-content/spacing-idle-1x.png
+nodes build-content/spacing-idle-1x.json
+resize 2200 1640
+scale 2
+wait 500
+shot build-content/spacing-idle-2x.png
+resize 1100 820
+scale 1
+text /settings
+key enter
+waitfor 15000 omp settings
+wait 500
+shot build-content/spacing-settings-1x.png
+nodes build-content/spacing-settings-1x.json
+resize 2200 1640
+scale 2
+wait 500
+shot build-content/spacing-settings-2x.png
+key esc
+wait 300
+resize 1100 820
+scale 1
+text /model
+key enter
+waitfor 15000 "k":"picker"
+wait 800
+shot build-content/spacing-picker-1x.png
+nodes build-content/spacing-picker-1x.json
+resize 2200 1640
+scale 2
+wait 500
+shot build-content/spacing-picker-2x.png
+key esc
+wait 300
+log build-content/spacing-live.log
+quit

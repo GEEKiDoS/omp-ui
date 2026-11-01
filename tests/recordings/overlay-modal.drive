@@ -1,0 +1,9 @@
+# Synthetic modal overlay: picker-layouts.jsonl --at 8
+resize 1100 820
+scale 1
+wait 100
+click 50 85
+wheel 50 85 -20
+log build-content/overlay-modal-events.txt
+shot build-content/overlay-modal.png
+quit

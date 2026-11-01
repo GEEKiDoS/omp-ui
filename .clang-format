@@ -1,0 +1,37 @@
+# Project style: tabs for indentation, 120 columns, one statement per line.
+# Apply with `clang-format -i src/*/*.{h,cpp} tools/*.cpp` (third_party/ is never formatted).
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+UseTab: ForIndentation
+IndentWidth: 4
+TabWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 120
+AccessModifierOffset: -4
+IndentCaseLabels: false
+NamespaceIndentation: None
+FixNamespaceComments: true
+PointerAlignment: Left
+ReferenceAlignment: Left
+# Bodies go on their own lines.
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortLambdasOnASingleLine: Inline
+AllowShortEnumsOnASingleLine: true
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBinaryOperators: NonAssignment
+BreakConstructorInitializers: BeforeColon
+PackConstructorInitializers: NextLine
+AlignAfterOpenBracket: Align
+AlignOperands: AlignAfterOperator
+Cpp11BracedListStyle: true
+# Include order matters in places (windows.h before other Win32 headers, stb defines).
+SortIncludes: Never
+IncludeBlocks: Preserve
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+SpaceBeforeParens: ControlStatements

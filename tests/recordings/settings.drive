@@ -1,0 +1,62 @@
+waitfor 15000 What are we cooking
+wait 1500
+scale 1
+resize 1100 820
+text /settings
+key enter
+waitfor 10000 omp settings
+wait 400
+nodes build-content/settings-original.json
+shot build-content/settings-1x.png
+click 765 113
+wait 400
+nodes build-content/settings-page-model.json
+click 732 113
+wait 400
+click 780 650
+wait 200
+nodes build-content/settings-selected.json
+click 1056 662
+wait 400
+nodes build-content/settings-switch-on.json
+click 1056 662
+wait 400
+nodes build-content/settings-switch-restored.json
+click 1038 548
+wait 400
+nodes build-content/settings-menu.json
+shot build-content/settings-menu.png
+click 780 790
+wait 500
+nodes build-content/settings-choice-ascii.json
+click 1038 548
+wait 400
+click 780 652
+wait 500
+nodes build-content/settings-restored.json
+shot build-content/settings-restored.png
+click 1075 22
+wait 500
+nodes build-content/settings-closed.json
+shot build-content/settings-closed.png
+text /settings
+key enter
+waitfor 10000 omp settings
+wait 400
+resize 2200 1640
+scale 2
+wait 500
+nodes build-content/settings-2x.json
+shot build-content/settings-2x.png
+scale 1
+resize 600 820
+wait 400
+nodes build-content/settings-narrow.json
+shot build-content/settings-narrow.png
+key esc
+wait 400
+resize 1100 820
+wait 300
+nodes build-content/settings-final.json
+log build-content/settings.log
+quit

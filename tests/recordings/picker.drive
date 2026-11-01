@@ -1,0 +1,76 @@
+# Real omp picker navigation only: never commit role/model changes.
+resize 1100 820
+scale 1
+waitfor 15000 What are we cooking
+wait 1500
+text /model
+key enter
+waitfor 15000 "k":"picker"
+wait 800
+shot build-content/picker-1x-final.png
+click 650 287
+wait 400
+nodes build-content/picker-selected-nodes.json
+key f12
+wait 100
+shot build-content/picker-select-final.png
+key f12
+dblclick 650 287
+wait 400
+nodes build-content/picker-strip-nodes.json
+key f12
+wait 100
+shot build-content/picker-activate-final.png
+key f12
+click 930 775
+wait 300
+click 460 119
+wait 400
+key f12
+wait 100
+shot build-content/picker-tab-final.png
+key f12
+wheel 700 500 -12
+wait 200
+shot build-content/picker-wheel-final.png
+key end
+wait 400
+shot build-content/picker-reveal-final.png
+click 400 363
+wait 1600
+key f12
+wait 100
+shot build-content/picker-scope-final.png
+key f12
+click 400 775
+wait 300
+click 930 775
+wait 200
+click 991 44
+wait 300
+text /model
+key enter
+wait 800
+nodes build-content/picker-reopened-nodes.json
+click 400 189
+wait 400
+shot build-content/picker-roles-final.png
+nodes build-content/picker-roles-nodes.json
+key esc
+wait 300
+text /mo
+wait 500
+shot build-content/overlay-caret-final.png
+log build-content/picker-events-final.txt
+key esc
+key ctrl+c
+scale 2
+resize 2200 1640
+wait 200
+text /model
+key enter
+wait 800
+shot build-content/picker-2x-final.png
+nodes build-content/picker-2x-nodes.json
+key esc
+quit
