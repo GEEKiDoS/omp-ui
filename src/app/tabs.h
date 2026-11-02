@@ -44,6 +44,8 @@ struct Tab {
 	bool attention = false, exited = false, visible = false;
 	int exitCode = 0;
 	uint64_t logGeneration = 0;
+	// omp's last bell or notification message since the app last looked (empty message: a bell).
+	std::optional<std::string> notification;
 	uint64_t titleGeneration = 0;
 };
 

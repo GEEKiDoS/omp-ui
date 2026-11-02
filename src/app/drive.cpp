@@ -278,14 +278,23 @@ bool Drive::tick(bool& running) {
 				}
 			}
 		} else if (command == "text" || command == "paste") {
+			const auto text = unescape(arg);
 			SDL_Event event{};
 			event.type = SDL_EVENT_TEXT_INPUT;
 			event.text.windowID = SDL_GetWindowID(&window_.get());
+			event.text.text = text.c_str();
 			views_.get().handle(event, 1, 1);
 			if (command == "text")
-				input_.get().driveText(unescape(arg));
+				input_.get().driveText(text);
 			else
-				input_.get().paste(unescape(arg));
+				input_.get().paste(text);
+		} else if (command == "preedit") {
+			const auto text = unescape(arg);
+			SDL_Event event{};
+			event.type = SDL_EVENT_TEXT_EDITING;
+			event.edit.windowID = SDL_GetWindowID(&window_.get());
+			event.edit.text = text.c_str();
+			views_.get().handle(event, 1, 1);
 		} else if (command == "key") {
 			SDL_Event event{};
 			event.type = SDL_EVENT_KEY_DOWN;
@@ -297,6 +306,27 @@ bool Drive::tick(bool& running) {
 				std::string error;
 				if (!input_.get().driveKey(arg, error))
 					fail(error);
+			}
+		} else if (command == "find") {
+			views_.get().openSearch();
+			views_.get().searchQuery(unescape(arg));
+		} else if (command == "findopt") {
+			std::string option, state, extra;
+			valid = static_cast<bool>(values >> option >> state) && !(values >> extra)
+			     && (option == "case" || option == "regex") && (state == "on" || state == "off");
+			if (valid)
+				views_.get().searchOption(option, state == "on");
+		} else if (command == "findnext" || command == "findprev") {
+			valid = arg.empty();
+			if (valid)
+				views_.get().searchNext(command == "findprev");
+		} else if (command == "findstate") {
+			valid = !arg.empty();
+			if (valid) {
+				std::ofstream file(text::utf8Path(arg), std::ios::binary);
+				file << views_.get().searchState().dump(2) << '\n';
+				if (!file)
+					fail("Cannot write " + arg);
 			}
 		} else if (command == "drop") {
 			valid = !arg.empty();
@@ -339,6 +369,13 @@ bool Drive::tick(bool& running) {
 						pointer(SDL_EVENT_MOUSE_BUTTON_UP, x, y, button, 2);
 					}
 				}
+			}
+		} else if (command == "down" || command == "up") {
+			valid = static_cast<bool>(values >> x >> y) && std::isfinite(x) && std::isfinite(y);
+			if (valid) {
+				pointer(SDL_EVENT_MOUSE_MOTION, x, y);
+				pointer(command == "down" ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP, x, y,
+				        SDL_BUTTON_LEFT, 1);
 			}
 		} else if (command == "drag") {
 			float x2 = 0, y2 = 0;

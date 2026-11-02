@@ -21,6 +21,7 @@ inline std::string iconGlyph(std::string_view name) {
 	    {"chev", 0xf078},
 	    {"chevron", 0xf078},
 	    {"chev-up", 0xf077},
+	    {"chev-r", 0xf054},
 	    {"commit", 0xf417},
 	    {"corner-down-right", 0xf060d},
 	    {"type", 0xf031},

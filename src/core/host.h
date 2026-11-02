@@ -29,8 +29,8 @@ public:
 	/** xterm modifyOtherKeys level (0 disables, 1/2 enable modified key reports). */
 	unsigned modifyOtherKeys = 0;
 	std::string title;
-	/** Desktop notification received while feed() runs; title OSCs remain separate. */
-	std::function<void()> onNotification;
+	/** A desktop notification (OSC 9/99/777) or a bell (BEL, empty message) arrived while feed() ran. */
+	std::function<void(std::string_view message)> onNotification;
 	/** Visible text of non-TSP output (escapes stripped), capped. */
 	std::string rowsText;
 	size_t rowsLimit = 256 * 1024;

@@ -245,6 +245,7 @@ void Tree::added(tsp::NodeId id) {
 	display(id);
 }
 void Tree::removing(tsp::NodeId id) {
+	searchChanged(id);
 	if (hoveredTool_ == id)
 		hoveredTool_ = 0;
 	overview_.erase(id);
@@ -354,6 +355,7 @@ void Tree::display(tsp::NodeId id) {
 		display(child);
 }
 void Tree::sync(tsp::NodeId id) {
+	searchChanged(id);
 	const auto& node = doc_.at(id);
 	auto& view = at(id);
 	const bool running = node.str("status") == "running";
@@ -701,7 +703,15 @@ void Tree::blobArrived(std::string_view blob) {
 			YGNodeMarkDirty(view->yoga.get());
 	}
 }
+void Tree::searchChanged(tsp::NodeId id) {
+	for (auto current = id; current; current = doc_.at(current).parent)
+		if (doc_.at(current).id == "main") {
+			++searchRevision;
+			return;
+		}
+}
 void Tree::textChanged(tsp::NodeId id) {
+	searchChanged(id);
 	auto& view = at(id);
 	kinds::sync(doc_.at(id), view.leaf, engine_.get(), fonts_, underComposer(id));
 	if (YGNodeHasMeasureFunc(view.yoga.get()))
@@ -961,6 +971,8 @@ void Tree::beginPaint(bool partial, bool more, bool transitions) {
 		at(*focus).caret.reset();
 }
 float Tree::reveal(NodeView& view, Uint64 duration) {
+	if (engine_.get().capture)
+		return 1; // Off-screen find gathers see settled text, not a just-started reveal.
 	if (view.revealPaint == paintSerial_)
 		return view.revealValue;
 	const Uint64 now = SDL_GetTicks();
@@ -1222,7 +1234,10 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				bottom = std::max(bottom, YGNodeLayoutGetTop(at(child).yoga.get())
 				                              + YGNodeLayoutGetHeight(at(child).yoga.get()));
 		view.scrollMax = std::max(0.0f, bottom + YGNodeLayoutGetPadding(yoga, YGEdgeBottom) - rect.h);
+		const float before = view.scroll;
 		view.sampleScroll(SDL_GetTicks());
+		if (view.scroll != before)
+			searchChanged(id);
 		transitioning |= view.scroll != view.scrollTween.target();
 	}
 	if (node.kind == tsp::Kind::List) {
@@ -1258,7 +1273,10 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 			view.leaf.budget = 0;
 			const float natural = kinds::measure(node, view.leaf, engine_.get(), fonts_, rect.w).y;
 			view.scrollMax = std::max(0.0f, natural - rect.h);
+			const float before = view.scroll;
 			view.sampleScroll(SDL_GetTicks());
+			if (view.scroll != before)
+				searchChanged(id);
 			transitioning |= view.scroll != view.scrollTween.target();
 			leafRect = {rect.x, rect.y - view.scroll, rect.w, std::max(rect.h, natural)};
 		}
@@ -1273,6 +1291,7 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 			animated.push_back(gfx::intersect(rect, clips.current()));
 		wakeAt(result.nextWake);
 		if (result.sizeChanged && YGNodeHasMeasureFunc(yoga)) {
+			searchChanged(id);
 			YGNodeMarkDirty(yoga);
 			wakeAt(SDL_GetTicks() + 1);
 			relayout = true; // Neighbours move: only a full paint shows that.
@@ -1450,6 +1469,7 @@ void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 		if (!scroller)
 			continue;
 		auto& owner = scroller == *main ? view : at(scroller);
+		const float before = owner.scroll;
 		owner.sampleScroll(SDL_GetTicks());
 		const float ownerHeight = scroller == *main ? viewportHeight : owner.rect.h;
 		if (scroller == *main)
@@ -1466,6 +1486,8 @@ void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 		if (scroller == *main)
 			view.stick = false;
 		owner.snapScroll(std::clamp(owner.scroll, 0.0f, scroller == *main ? max : owner.scrollMax));
+		if (scroller != *main && owner.scroll != before)
+			searchChanged(scroller);
 	}
 	for (const auto& [id, by] : doc_.scrolls) {
 		if (by == "end") {
@@ -1579,6 +1601,7 @@ Views::Views(tsp::Session& session, SDL_Renderer& renderer, text::Engine& engine
 			tree->blobArrived(blob);
 	};
 	session_.surfaceClosing = [this](auto& surface) {
+		scrollbarMarksDirty_ = true;
 		dismissHover();
 		active_.reset();
 		scrollOwner_.reset();
@@ -1593,6 +1616,7 @@ Views::Views(tsp::Session& session, SDL_Renderer& renderer, text::Engine& engine
 	};
 	// Keep/adopt changes presentation order, never the attached document/view pair.
 	session_.surfaceChanged = [this](auto&) {
+		scrollbarMarksDirty_ = true;
 		dismissHover();
 		caret_.reset();
 	};
@@ -1644,6 +1668,112 @@ void Views::themeChanged() {
 	images_.clear(); // Pictures are cheap to decode again; SVG theme colours come from the palette.
 	metricsChanged();
 }
+void Views::openSearch() {
+	search_.show(!search_.open && hasSelection() ? selectionText() : std::string{});
+}
+bool Views::claimSearchKey(SDL_Keycode key, SDL_Keymod mod) const {
+#ifdef __APPLE__
+	const bool shortcut = key == SDLK_F && (mod & SDL_KMOD_GUI);
+#else
+	const bool shortcut = key == SDLK_F && (mod & SDL_KMOD_CTRL) && (mod & SDL_KMOD_SHIFT);
+#endif
+	// With the prompt focused, Enter, Esc and Alt+… are omp's (send, interrupt, its shortcuts); only
+	// F3 still steps through matches, as in an editor whose find widget lost focus.
+	return shortcut || searchFocused() || (search_.open && key == SDLK_F3);
+}
+bool Views::searchKey(SDL_Keycode key, SDL_Keymod mod, std::string_view typed) {
+#ifdef __APPLE__
+	const bool shortcut = key == SDLK_F && (mod & SDL_KMOD_GUI);
+#else
+	const bool shortcut = key == SDLK_F && (mod & SDL_KMOD_CTRL) && (mod & SDL_KMOD_SHIFT);
+#endif
+	if (shortcut) {
+		openSearch();
+		return true;
+	}
+	const bool handled = search_.key(key, mod, typed);
+	if (search_.navigation) {
+		const bool previous = search_.navigation < 0;
+		search_.navigation = 0;
+		searchNext(previous);
+	}
+	return handled;
+}
+bool Views::searchText(std::string_view value) {
+	if (!searchFocused())
+		return false;
+	search_.key(SDLK_UNKNOWN, SDL_KMOD_NONE, value);
+	return true;
+}
+void Views::searchQuery(std::string_view value) {
+	search_.show({});
+	search_.setQuery(value);
+}
+void Views::searchOption(std::string_view option, bool enabled) {
+	search_.setOption(option, enabled);
+}
+void Views::searchNext(bool previous) {
+	if (!search_.open)
+		return;
+	if (search_.due)
+		updateSearch();
+	if (search_.matches.empty())
+		return;
+	search_.current = previous ? (search_.current + search_.matches.size() - 1) % search_.matches.size()
+	                           : (search_.current + 1) % search_.matches.size();
+	revealSearchMatch();
+}
+void Views::revealSearchMatch() {
+	const auto& match = search_.matches[search_.current];
+	const float y = match.y - mainScroll_;
+	if (y < mainClip_.y || y + match.height > mainClip_.y + mainClip_.h)
+		scrollMainTo(match.y - mainClip_.y - (mainClip_.h - match.height) * 0.5f);
+}
+void Views::updateSearch() {
+	const auto started = SDL_GetPerformanceCounter();
+	search_.begin();
+	// The caller is about to repaint, so this unpresented gather cannot double-blend the frame.
+	if (!search_.query.empty() && !search_.invalid && lastViewport_.w > 0) {
+		engine_.get().capture = [this](const auto& runs, const auto& layout, float x, float y, SDL_FRect clip) {
+			search_.collect(runs, layout, x, y, mainScroll_, clip);
+		};
+		gather_ = searchGather_ = true;
+		paint(lastViewport_);
+		gather_ = searchGather_ = false;
+		engine_.get().capture = {};
+	}
+	search_.finish();
+	search_.milliseconds = static_cast<double>(SDL_GetPerformanceCounter() - started) * 1000
+	                     / static_cast<double>(SDL_GetPerformanceFrequency());
+}
+json Views::searchState() const {
+	const auto rect = [](SDL_FRect value) {
+		return json::array({value.x, value.y, value.w, value.h});
+	};
+	json result{{"open", search_.open},
+	            {"focused", searchFocused()},
+	            {"query", search_.query},
+	            {"case", search_.caseSensitive},
+	            {"regex", search_.regex},
+	            {"invalid", search_.invalid},
+	            {"count", search_.matches.size()},
+	            {"capped", search_.capped},
+	            {"current", search_.matches.empty() ? 0 : search_.current + 1},
+	            {"status", search_.statusText()},
+	            {"search_ms", search_.milliseconds},
+	            {"pending", search_.due != 0},
+	            {"scroll", mainScroll_},
+	            {"content_height", contentHeight_},
+	            {"main", rect(mainClip_)},
+	            {"minimap", rect(minimap_)},
+	            {"scrollbar", rect(scrollbar_)},
+	            {"thumb", rect(scrollThumb_)},
+	            {"prompt_markers", promptMarkers_.size()}};
+	if (!search_.matches.empty())
+		result["match_y"] = search_.matches[search_.current].y;
+	return result;
+}
+
 float Views::contentWidth(float viewportWidth) const {
 	if (const auto screen = session_.screen()) {
 		const auto& tree = *trees_.at(screen->get().id);
@@ -1675,10 +1805,10 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	scrollOwner_.reset();
 	caret_.reset();
 	const auto screen = session_.screen();
-	// While the transcript scrolls, the minimap has a lane at the right edge (its width plus a
-	// gap to the window edge) and the column and dock centre in the area left of it, so their
-	// margins match on both sides; otherwise they centre in the whole width.
+	// While the transcript scrolls, a gap, the minimap and the scrollbar (touching it) have a lane
+	// at the right edge; the column and dock centre in the area left of it.
 	const float em = fonts_.size();
+	const float scrollbarWidth = 14 * em / 15, laneWidth = em * (minimapEms + 1) + scrollbarWidth;
 	kept_.clear();
 	for (const auto& surface : session_.surfaces()) {
 		if (screen) {
@@ -1734,7 +1864,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		relayoutAt_ = 0;
 	float dockHeight = 0, maxScroll = 0;
 	auto layOut = [&](bool lane) {
-		area = std::max(1.0f, content.w - (lane ? em * (minimapEms + 1) : 0));
+		area = std::max(1.0f, content.w - (lane ? laneWidth : 0));
 		float innerWidth = std::max(1.0f, area - 2 * pad);
 		// When the last re-wrap was slow, a new width waits until it has held for a moment (the
 		// window being dragged), painting the column at its laid-out width meanwhile.
@@ -1743,7 +1873,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		if (freezeWidth) {
 			// Always slide at the narrower endpoint: it fits throughout the transition. A
 			// narrowing re-wrap happens once now; widening keeps its old width until the end.
-			const float finalArea = std::max(1.0f, finalContentWidth - (lane ? em * (minimapEms + 1) : 0));
+			const float finalArea = std::max(1.0f, finalContentWidth - (lane ? laneWidth : 0));
 			const float finalWidth = std::max(1.0f, finalArea - 2 * pad);
 			innerWidth = laidWidth_ > 0 ? std::min(laidWidth_, finalWidth) : finalWidth;
 		} else if (laidWidth_ > 0 && innerWidth != laidWidth_ && slowRelayout_ && !forceWidthLayout_) {
@@ -1798,6 +1928,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	if (relaid) {
 		lastDirty_ = dirty;
 		lastMeasured_ = measured;
+		scrollbarMarksDirty_ = true;
 	}
 	float scroll = 0;
 	if (scrollOwner_) {
@@ -1815,6 +1946,23 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 			scroll = view.scroll;
 		}
 	}
+	if (!gather_ && search_.open) {
+		uint64_t revision = 0;
+		for (const auto& kept : kept_)
+			revision = (revision * 1099511628211ULL) ^ kept.get().searchRevision
+			         ^ std::hash<std::string_view>{}(kept.get().surface().id);
+		if (active_)
+			revision = (revision * 1099511628211ULL) ^ active_->get().searchRevision
+			         ^ std::hash<std::string_view>{}(active_->get().surface().id);
+		const SDL_FRect geometry{content.x, content.y, area, contentHeight_};
+		if (revision != searchRevision_ || geometry.x != searchGeometry_.x || geometry.y != searchGeometry_.y
+		    || geometry.w != searchGeometry_.w || geometry.h != searchGeometry_.h) {
+			searchRevision_ = revision;
+			searchGeometry_ = geometry;
+			if (!search_.due)
+				search_.due = SDL_GetTicks() + 120;
+		}
+	}
 	auto& clips = *clips_;
 	// A gather pass paints the whole transcript unclipped, so a copy includes text scrolled out of view.
 	const SDL_FRect everywhere{content.x, -1e7f, content.w, 2e7f};
@@ -1823,7 +1971,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	float y = viewport.y + pad * 0.6f - scroll;
 	bool animating = false;
 	mainScroll_ = scroll;
-	if (selection_) {
+	if (selection_ && !searchGather_) {
 		// Endpoints live in transcript space so the selection scrolls with its text.
 		SDL_FPoint a{selection_->first.x, selection_->first.y - scroll},
 		    b{selection_->second.x, selection_->second.y - scroll};
@@ -1837,6 +1985,12 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		const float width = id ? YGNodeLayoutGetWidth(tree.at(*id).yoga.get()) : 0;
 		return content.x + (area - width) * 0.5f;
 	};
+	if (!gather_ && search_.open) {
+		search_.scroll = scroll;
+		engine_.get().decorate = [this](const auto& runs, const auto& layout, float x, float y, float opacity) {
+			search_.highlight(engine_.get(), runs, layout, x, y, opacity);
+		};
+	}
 	for (auto& tree : kept_) {
 		// Main's scroll belongs to the shared transcript, not each kept surface.
 		animating |= tree.get().paint("main", columnX(tree, "main"), y, renderer_.get(), clips);
@@ -1850,6 +2004,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		animating |= tree.paint("main", columnX(tree, "main"), y, renderer_.get(), clips);
 		painted_.push_back(tree);
 	}
+	engine_.get().decorate = {};
 	engine_.get().setSelection(std::nullopt);
 	clips.pop();
 	if (gather_) {
@@ -1857,20 +2012,29 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		return false;
 	}
 	if (!partial) {
-		// Both run the full height of the content: the minimap in its lane, a thin scrollbar at
-		// the very edge. A partial repaint keeps the last ones.
+		// Both run the full height of the content. A partial repaint keeps the last ones.
 		minimap_ = {};
+		scrollbar_ = {};
+		scrollThumb_ = {};
+		scrollbarHover_ = false;
 		const auto main = scrollOwner_ ? scrollOwner_->get().document().find("main") : std::nullopt;
 		const float mainWidth = main ? YGNodeLayoutGetWidth(scrollOwner_->get().at(*main).yoga.get()) : 0;
 		if (maxScroll > 0 && mainClip_.h > 0) {
 			if (!page && mainWidth > 0) {
-				minimap_ = {content.x + content.w - em * (minimapEms + 1), content.y, em * minimapEms, content.h};
+				minimap_ = {content.x + content.w - scrollbarWidth - em * minimapEms, content.y, em * minimapEms,
+				            content.h};
 				paintMinimap(scroll, maxScroll, pad, mainWidth);
 			}
-			const float thumb = std::max(em * 1.5f, content.h * mainClip_.h / contentHeight_);
-			gfx::rounded(renderer_.get(),
-			             {content.x + content.w - 4, content.y + (content.h - thumb) * scroll / maxScroll, 2, thumb}, 1,
-			             text::palette::dim);
+			if (page) {
+				const float thumb = std::max(em * 1.5f, content.h * mainClip_.h / contentHeight_);
+				gfx::rounded(
+				    renderer_.get(),
+				    {content.x + content.w - 4, content.y + (content.h - thumb) * scroll / maxScroll, 2, thumb}, 1,
+				    text::palette::dim);
+			} else {
+				scrollbar_ = {content.x + content.w - scrollbarWidth, content.y, scrollbarWidth, content.h};
+				paintScrollbar(scroll, maxScroll, pad);
+			}
 		}
 	}
 	if (active_) {
@@ -1894,6 +2058,8 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	elsewhere |= paintHover(viewport);
 	animatedElsewhere_ = elsewhere || (more && animatedElsewhere_);
 	animating |= elsewhere;
+	if (search_.open)
+		search_.paint(renderer_.get(), engine_.get(), fonts_, {content.x, content.y, area, mainClip_.h});
 	paintMenu();
 	auto schedule = [&](Uint64 tick) {
 		if (tick && (!nextWake_ || tick < nextWake_))
@@ -1988,6 +2154,81 @@ void Views::paintMinimap(float scroll, float maxScroll, float pad, float mainWid
 	gfx::fill(renderer_.get(), slider, text::withAlpha(text::palette::fg, minimapDrag_ ? 56 : 36));
 	clips.pop();
 }
+void Views::paintScrollbar(float scroll, float maxScroll, float pad) {
+	const float em = fonts_.size(), scale = em / 15;
+	auto& renderer = renderer_.get();
+	scrollbarHover_ = contains(scrollbar_, pointer_->position.x, pointer_->position.y);
+	gfx::fill(renderer, scrollbar_, text::withAlpha(text::palette::fg, scrollbarHover_ ? 22 : 12));
+	const float thumb = std::min(scrollbar_.h, std::max(24 * scale, scrollbar_.h * mainClip_.h / contentHeight_));
+	scrollThumb_ = {scrollbar_.x + scale, scrollbar_.y + (scrollbar_.h - thumb) * scroll / maxScroll,
+	                std::max(0.0f, scrollbar_.w - 2 * scale), thumb};
+	gfx::fill(renderer, scrollThumb_,
+	          text::withAlpha(text::palette::fg, scrollbarDrag_    ? 118
+	                                             : scrollbarHover_ ? 88
+	                                                               : 56));
+	if (scrollbarMarksDirty_) {
+		promptMarkers_.clear();
+		const auto collect = [&](auto&& self, Tree& tree, tsp::NodeId id, float parentY) -> void {
+			const auto yoga = tree.at(id).yoga.get();
+			if (YGNodeStyleGetDisplay(yoga) == YGDisplayNone)
+				return;
+			const float y = parentY + YGNodeLayoutGetTop(yoga);
+			const auto& node = tree.document().at(id);
+			if (node.str("role") == "omp.user")
+				promptMarkers_.push_back(y);
+			for (const auto child : node.children)
+				self(self, tree, child, y);
+		};
+		float top = pad * 0.6f;
+		const auto add = [&](Tree& tree) {
+			if (const auto main = tree.document().find("main"))
+				for (const auto child : tree.document().at(*main).children)
+					collect(collect, tree, child, top);
+		};
+		for (auto& tree : kept_) {
+			add(tree.get());
+			top += tree.get().height("main") + em * gfx::space::sm * 2;
+		}
+		if (active_)
+			add(active_->get());
+		scrollbarMarksDirty_ = false;
+	}
+	// Quantising into reused rows merges crowded ticks without repeated alpha blending.
+	const float minimumRow = std::max(2.0f, std::ceil(2 * scale));
+	const size_t rowCount = std::max<size_t>(1, static_cast<size_t>(scrollbar_.h / minimumRow));
+	const float rowHeight = scrollbar_.h / static_cast<float>(rowCount), ratio = scrollbar_.h / contentHeight_;
+	scrollbarRows_.assign(rowCount, 0);
+	const auto mark = [&](float y, float height, Uint8 bits) {
+		const auto row = [&](float value) {
+			return static_cast<size_t>(
+			    std::clamp(std::floor(value * ratio / rowHeight), 0.0f, static_cast<float>(rowCount - 1)));
+		};
+		const size_t first = row(y), last = row(y + height);
+		for (size_t i = first; i <= last; ++i)
+			scrollbarRows_[i] |= bits;
+	};
+	for (const float y : promptMarkers_)
+		mark(y, 0, 1);
+	if (search_.open)
+		for (size_t i = 0; i < search_.matches.size(); ++i) {
+			const auto& match = search_.matches[i];
+			mark(match.y - lastViewport_.y, match.height, i == search_.current ? 4 : 2);
+		}
+	const float half = scrollbar_.w * 0.5f;
+	for (size_t i = 0; i < rowCount; ++i) {
+		const Uint8 bits = scrollbarRows_[i];
+		const float y = scrollbar_.y + static_cast<float>(i) * rowHeight;
+		if (bits & 1)
+			gfx::fill(renderer, {scrollbar_.x + scale, y, std::max(0.0f, half - 2 * scale), rowHeight},
+			          text::withAlpha(text::palette::accent, 145));
+		if (bits & 6) {
+			const bool current = (bits & 4) != 0;
+			const float width = current ? half : half * 0.65f;
+			gfx::fill(renderer, {scrollbar_.x + scrollbar_.w - width, y, width, rowHeight},
+			          text::withAlpha(text::palette::warning, current ? 255 : 170));
+		}
+	}
+}
 void Views::scrollMainTo(float value) {
 	if (!scrollOwner_)
 		return;
@@ -2013,7 +2254,7 @@ bool Views::wheel(float x, float y, float deltaPixels) {
 		if (const auto target = tree.hit(x, y); target && target->get().kind == TargetKind::Block)
 			return true;
 	}
-	if (!scrollOwner_ || !(contains(mainClip_, x, y) || contains(minimap_, x, y)))
+	if (!scrollOwner_ || !(contains(mainClip_, x, y) || contains(minimap_, x, y) || contains(scrollbar_, x, y)))
 		return false;
 	auto& tree = scrollOwner_->get();
 	const auto main = tree.document().find("main");

@@ -53,6 +53,8 @@ void TerminalHost::onText(std::string_view text) {
 		const auto b = static_cast<unsigned char>(ch);
 		if (b == '\n' || b == '\t' || b >= 0x20)
 			rowsText.push_back(ch);
+		else if (b == 0x07 && onNotification)
+			onNotification({});
 	}
 	if (rowsText.size() > rowsLimit) {
 		size_t cut = rowsText.size() - rowsLimit / 2;
@@ -183,10 +185,18 @@ void TerminalHost::onOsc(std::string_view body) {
 		title = std::string(rest);
 	} else if ((code == "10" || code == "11") && rest == "?") {
 		write_("\x1b]" + std::string(code) + ";" + (code == "10" ? foreground : background) + "\x1b\\");
-	} else if (onNotification && semi != std::string_view::npos
-	           && ((code == "9" && rest != "4" && !rest.starts_with("4;"))
-	               || (code == "777" && rest.starts_with("notify;")) || (code == "99" && osc99Notification(rest)))) {
-		onNotification();
+	} else if (onNotification && semi != std::string_view::npos) {
+		// OSC 9 `<message>` (but not 9;4, progress), OSC 777 `notify;<title>;<body>`, OSC 99 `<meta>;<payload>`
+		// (its final chunk; a base64 payload, e=1, shows as the generic message).
+		if (code == "9" && rest != "4" && !rest.starts_with("4;"))
+			onNotification(rest);
+		else if (code == "777" && rest.starts_with("notify;"))
+			onNotification(rest.substr(7));
+		else if (code == "99" && osc99Notification(rest)) {
+			const auto metadata = rest.substr(0, rest.find(';'));
+			onNotification(metadata.find("e=1") == std::string_view::npos ? rest.substr(metadata.size() + 1)
+			                                                              : std::string_view{});
+		}
 	}
 }
 

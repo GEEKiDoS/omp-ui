@@ -72,9 +72,10 @@ Tab::Tab(std::string cwdValue, std::string titleValue, std::vector<std::string> 
 	host.session.onLog = [this](const tsp::LogEntry&) {
 		++logGeneration;
 	};
-	host.onNotification = [this] {
+	host.onNotification = [this](std::string_view message) {
 		if (!visible)
 			attention = true;
+		notification = std::string(message);
 	};
 	views.onRunningChanged = [this](int count) {
 		if (!visible && running > 0 && count == 0)

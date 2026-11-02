@@ -305,7 +305,7 @@ bool Input::reservedShortcut(SDL_Keycode key, SDL_Keymod mod) {
 		return (mod & SDL_KMOD_SHIFT) && (key == SDLK_T || key == SDLK_M);
 	if (mod & SDL_KMOD_SHIFT)
 		return key == SDLK_LEFTBRACKET || key == SDLK_RIGHTBRACKET;
-	return key == SDLK_T || key == SDLK_W || key == SDLK_B || (key >= SDLK_1 && key <= SDLK_9);
+	return key == SDLK_F || key == SDLK_T || key == SDLK_W || key == SDLK_B || (key >= SDLK_1 && key <= SDLK_9);
 #else
 	if (!(mod & SDL_KMOD_CTRL) || (mod & SDL_KMOD_GUI))
 		return false;
@@ -315,7 +315,7 @@ bool Input::reservedShortcut(SDL_Keycode key, SDL_Keymod mod) {
 		return true;
 	if (!(mod & SDL_KMOD_SHIFT))
 		return key == SDLK_PAGEUP || key == SDLK_PAGEDOWN;
-	return key == SDLK_T || key == SDLK_W || key == SDLK_B || (key >= SDLK_1 && key <= SDLK_9);
+	return key == SDLK_F || key == SDLK_T || key == SDLK_W || key == SDLK_B || (key >= SDLK_1 && key <= SDLK_9);
 #endif
 }
 
@@ -337,6 +337,17 @@ bool Input::driveKey(std::string_view description, std::string& error) {
 	event.down = true;
 	if (!parseDriveKey(description, event, error))
 		return false;
+	if (searchKey && claimSearchKey && claimSearchKey(event.key, event.mod)) {
+		std::string typed;
+		if (event.key >= SDLK_SPACE && event.key <= SDLK_TILDE
+		    && !(event.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI | SDL_KMOD_ALT))) {
+			const auto translated =
+			    SDL_GetKeyFromScancode(event.scancode, static_cast<SDL_Keymod>(event.mod & SDL_KMOD_SHIFT), false);
+			text::append(typed, translated && !(translated & SDLK_SCANCODE_MASK) ? translated : event.key);
+		}
+		if (searchKey(event.key, event.mod, typed))
+			return true;
+	}
 	if (handleShortcut(event))
 		return true;
 	if (editKey && editKey(event.key, event.mod, {}))
@@ -360,12 +371,16 @@ bool Input::driveKey(std::string_view description, std::string& error) {
 }
 
 void Input::driveText(std::string_view value) {
+	if (searchText && searchText(value))
+		return;
 	if (editKey && editKey(SDLK_UNKNOWN, SDL_KMOD_NONE, value))
 		return;
 	textInput(value);
 }
 
 void Input::paste(std::string_view source) {
+	if (searchText && searchText(source))
+		return;
 	if (source.empty())
 		return;
 	std::string text;
@@ -407,12 +422,19 @@ bool Input::handle(const SDL_Event& event) {
 	if (event.type == SDL_EVENT_TEXT_INPUT) {
 		if (event.text.windowID != SDL_GetWindowID(&window_))
 			return false;
-		if (enabled_ && (suppressTextKey_ == SDL_SCANCODE_UNKNOWN || composing_)) {
-			if (!host_.get().win32InputMode && !composing_ && (SDL_GetModState() & SDL_KMOD_ALT)
-			    && !(SDL_GetModState() & SDL_KMOD_MODE))
-				pty_.get().write("\x1b");
-			if (!editKey || !editKey(SDLK_UNKNOWN, SDL_KMOD_NONE, event.text.text))
-				textInput(event.text.text);
+		if (suppressTextKey_ == SDL_SCANCODE_UNKNOWN || composing_) {
+			if (searchText && searchText(event.text.text)) {
+				suppressTextKey_ = SDL_SCANCODE_UNKNOWN;
+				composing_ = false;
+				return true;
+			}
+			if (enabled_) {
+				if (!host_.get().win32InputMode && !composing_ && (SDL_GetModState() & SDL_KMOD_ALT)
+				    && !(SDL_GetModState() & SDL_KMOD_MODE))
+					pty_.get().write("\x1b");
+				if (!editKey || !editKey(SDLK_UNKNOWN, SDL_KMOD_NONE, event.text.text))
+					textInput(event.text.text);
+			}
 		}
 		suppressTextKey_ = SDL_SCANCODE_UNKNOWN;
 		composing_ = false;
@@ -433,6 +455,16 @@ bool Input::handle(const SDL_Event& event) {
 	if (event.type == SDL_EVENT_KEY_UP) {
 		if (event.key.scancode == suppressTextKey_)
 			suppressTextKey_ = SDL_SCANCODE_UNKNOWN;
+		return true;
+	}
+	if (composing_ && searchFocused && searchFocused())
+		return true;
+	if (searchKey && searchKey(event.key.key, event.key.mod, {})) {
+		// Local command chords must not also insert the text SDL emits for their letter.
+		const auto mod = event.key.mod;
+		const bool chord = (mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI))
+		                || ((mod & SDL_KMOD_ALT) && (event.key.key == SDLK_C || event.key.key == SDLK_R));
+		suppressTextKey_ = chord && !(mod & SDL_KMOD_MODE) ? event.key.scancode : SDL_SCANCODE_UNKNOWN;
 		return true;
 	}
 	suppressTextKey_ = event.key.scancode;

@@ -131,6 +131,7 @@ int main(int argc, char* argv[]) {
 		std::cerr << error << '\n';
 		return 1;
 	}
+	SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
 		std::cerr << SDL_GetError() << '\n';
 		return 1;
@@ -178,6 +179,22 @@ int main(int argc, char* argv[]) {
 	size_t next = 0;
 	const auto started = SDL_GetTicks();
 	bool running = true, dirty = true, animating = false;
+	input.searchFocused = [&] {
+		return views.searchFocused();
+	};
+	input.claimSearchKey = [&](SDL_Keycode key, SDL_Keymod mod) {
+		return views.claimSearchKey(key, mod);
+	};
+	input.searchKey = [&](SDL_Keycode key, SDL_Keymod mod, std::string_view typed) {
+		const bool consumed = views.searchKey(key, mod, typed);
+		dirty |= consumed;
+		return consumed;
+	};
+	input.searchText = [&](std::string_view typed) {
+		const bool consumed = views.searchText(typed);
+		dirty |= consumed;
+		return consumed;
+	};
 	auto resize = [&] {
 		int w = 1, h = 1;
 		SDL_GetRenderOutputSize(renderer.get(), &w, &h);
@@ -225,6 +242,10 @@ int main(int argc, char* argv[]) {
 			SDL_SetRenderDrawColor(renderer.get(), text::palette::bg.r, text::palette::bg.g, text::palette::bg.b, 255);
 			SDL_RenderClear(renderer.get());
 			animating = views.paint({0, 0, static_cast<float>(w), static_cast<float>(h)});
+			int ww = 1, wh = 1;
+			SDL_GetWindowSize(window.get(), &ww, &wh);
+			input.setCaret(views.focusedCaret(), static_cast<float>(w) / static_cast<float>(ww),
+			               static_cast<float>(h) / static_cast<float>(wh));
 			if (captureAt && SDL_GetTicks() >= *captureAt) {
 				if (!app::saveScreenshot(*renderer, shot)) {
 					std::cerr << "Screenshot failed: " << SDL_GetError() << '\n';
@@ -262,8 +283,12 @@ int main(int argc, char* argv[]) {
 		SDL_Event event{};
 		if (SDL_WaitEventTimeout(&event, timeout))
 			do {
-				if (event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE))
+				if (event.type == SDL_EVENT_QUIT
+				    || (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE
+				        && !views.claimSearchKey(event.key.key, event.key.mod))) {
 					running = false;
+					break;
+				}
 				if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
 					resize();
 					dirty = true;
@@ -275,6 +300,7 @@ int main(int argc, char* argv[]) {
 				SDL_GetRenderOutputSize(renderer.get(), &ow, &oh);
 				dirty |= views.handle(event, static_cast<float>(ow) / static_cast<float>(ww),
 				                      static_cast<float>(oh) / static_cast<float>(wh));
+				input.handle(event);
 			} while (SDL_PollEvent(&event));
 		dirty |= views.tick() != view::Views::Wake::None;
 	}

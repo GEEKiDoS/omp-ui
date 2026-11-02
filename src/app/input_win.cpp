@@ -98,6 +98,10 @@ bool Input::windowsMessage(MSG& message) {
 		consumedKeys_[vk] = false;
 		return false;
 	}
+	if (up && vk < searchKeys_.size() && searchKeys_[vk]) {
+		searchKeys_[vk] = false;
+		return true; // SDL still needs modifier releases, but omp never owned this key.
+	}
 	if (!host_.get().win32InputMode && !deferred && !consumed)
 		return true;
 	// SDL's IME backend emits TEXT_INPUT directly from WM_IME_COMPOSITION. WM_CHARs made from a
@@ -128,8 +132,8 @@ bool Input::windowsMessage(MSG& message) {
 		key = SDLK_PAGEDOWN;
 	if (vk == VK_RETURN)
 		key = extended ? SDLK_KP_ENTER : SDLK_RETURN;
-	if (vk == VK_F12)
-		key = SDLK_F12;
+	if (vk >= VK_F1 && vk <= VK_F12)
+		key = SDLK_F1 + vk - VK_F1;
 	if (vk == VK_BACK)
 		key = SDLK_BACKSPACE;
 	if (vk == VK_DELETE)
@@ -138,9 +142,32 @@ bool Input::windowsMessage(MSG& message) {
 		key = SDLK_ESCAPE;
 	if (vk == VK_SPACE)
 		key = SDLK_SPACE;
+	if (vk == VK_LEFT)
+		key = SDLK_LEFT;
+	if (vk == VK_RIGHT)
+		key = SDLK_RIGHT;
+	if (vk == VK_UP)
+		key = SDLK_UP;
+	if (vk == VK_DOWN)
+		key = SDLK_DOWN;
+	if (vk == VK_HOME)
+		key = SDLK_HOME;
+	if (vk == VK_END)
+		key = SDLK_END;
+	if (vk == VK_INSERT)
+		key = SDLK_INSERT;
 	const auto mod = static_cast<SDL_Keymod>((ctrl ? SDL_KMOD_CTRL : 0) | (alt ? SDL_KMOD_ALT : 0)
 	                                         | (shift ? SDL_KMOD_SHIFT : 0) | (gui ? SDL_KMOD_GUI : 0));
-	if (deferred
+	const bool local =
+	    searchPending_ || (searchFocused && searchFocused()) || (claimSearchKey && claimSearchKey(key, mod));
+	const bool modifierKey =
+	    vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL;
+	if (local && !deferred && (modifierKey || imeComposing_)) {
+		searchKeys_[vk] = down;
+		recordedChars_ = 0;
+		return true; // Keep SDL's modifier/IME state without sending terminal records.
+	}
+	if (deferred || local
 	    || (down && onShortcut
 	        && (reservedShortcut(key, mod) || claimed(key, mod) || key == SDLK_F12 || key == SDLK_RETURN
 	            || key == SDLK_KP_ENTER))) {
@@ -160,26 +187,30 @@ bool Input::windowsMessage(MSG& message) {
 		pending.sc = sc;
 		pending.state = controlKeyState(extended);
 		pending.repeat = down ? std::max<UINT>(1, message.lParam & 0xffff) : 1;
+		pending.search = local;
 		pending.forward = host_.get().win32InputMode && enabled_ && !imeComposing_;
-		if (pending.forward) {
+		if (pending.forward || (pending.search && down)) {
 			std::array<BYTE, 256> keys{};
 			GetKeyboardState(keys.data());
+			// Local keys never reach TranslateMessage, so own their dead-key state here.
 			pending.count = ToUnicode(vk, sc | (down ? 0 : 0x8000), keys.data(), pending.chars.data(),
-			                          static_cast<int>(pending.chars.size()), 4);
+			                          static_cast<int>(pending.chars.size()), pending.search && down ? 0 : 4);
 		}
 		shortcutKeys_[vk] = down;
 		// Wake the normal SDL dispatcher without translating a duplicate key or
 		// text event. App callbacks can destroy the active tab, so cannot run here.
 		if (!SDL_PushEvent(&event))
 			pendingShortcuts_.pop_back();
+		else if (local && down && key == SDLK_F && ctrl && shift && !alt && !gui)
+			searchPending_ = true; // Capture keys queued before the open shortcut is dispatched.
+		if (local)
+			recordedChars_ = 0;
 		return false;
 	}
 	if (consumed)
 		return false;
 	if (imeComposing_ || !enabled_)
 		return true;
-	const bool modifierKey =
-	    vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL;
 	if (down && editKey && !modifierKey) {
 		// The typed text (without disturbing dead-key state) lets a selected editor range be replaced.
 		std::array<BYTE, 256> keys{};
@@ -224,20 +255,51 @@ bool Input::handleWindowsShortcut(const SDL_KeyboardEvent& event) {
 	pendingShortcuts_.pop_front();
 	auto key = event;
 	key.raw = static_cast<Uint16>(pending.sc | ((pending.state & ENHANCED_KEY) ? 0xe000 : 0));
+	if (pending.search && event.type == SDL_EVENT_KEY_DOWN && key.key == SDLK_F && (key.mod & SDL_KMOD_CTRL)
+	    && (key.mod & SDL_KMOD_SHIFT) && !(key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI)))
+		searchPending_ = false;
 	if (event.type == SDL_EVENT_KEY_DOWN) {
 		const bool consumed = event.repeat && consumedShortcuts_[pending.vk];
 		consumedShortcuts_[pending.vk] = true;
+		if (composing_ && searchFocused && searchFocused())
+			return true;
+		std::string typed;
+		if (pending.search && !composing_) {
+			for (int i = 0; i < pending.count; ++i) {
+				uint32_t unit = pending.chars[i];
+				if (unit >= 0xd800 && unit < 0xdc00 && i + 1 < pending.count)
+					unit = 0x10000 + ((unit - 0xd800) << 10) + (pending.chars[++i] - 0xdc00);
+				if (unit >= 0x20 && unit != 0x7f)
+					text::append(typed, unit);
+			}
+		}
+		if (searchKey && searchKey(key.key, key.mod, typed)) {
+			suppressTextKey_ = SDL_SCANCODE_UNKNOWN;
+			return true;
+		}
 		if (handleShortcut(key))
 			return true;
 		consumedShortcuts_[pending.vk] = consumed;
 		if (consumed)
 			return true;
+		if (enabled_ && !composing_ && editKey && editKey(key.key, key.mod, typed)) {
+			consumedShortcuts_[pending.vk] = true;
+			return true;
+		}
+		const bool ctrlV = (key.mod & SDL_KMOD_CTRL) && !(key.mod & SDL_KMOD_ALT) && key.key == SDLK_V;
+		const bool shiftInsert = (key.mod & SDL_KMOD_SHIFT) && key.key == SDLK_INSERT;
+		if (enabled_ && (ctrlV || shiftInsert) && pasteClipboard()) {
+			consumedShortcuts_[pending.vk] = true;
+			return true;
+		}
 	} else {
 		const bool consumed = consumedShortcuts_[pending.vk];
 		consumedShortcuts_[pending.vk] = false;
 		if (consumed)
 			return true;
 	}
+	if (searchFocused && searchFocused())
+		return true;
 	if (!pending.forward || !enabled_)
 		return true;
 	std::string out;

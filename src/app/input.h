@@ -24,6 +24,7 @@ public:
 	Input& operator=(const Input&) = delete;
 
 	bool handle(const SDL_Event& event);
+	static bool reservedShortcut(SDL_Keycode key, SDL_Keymod mod);
 	void setEnabled(bool enabled) { enabled_ = enabled; }
 	void setTarget(TerminalHost& host, Pty& pty) {
 		host_ = host;
@@ -31,22 +32,28 @@ public:
 	}
 	// Called before terminal encoding; true consumes the shortcut and its text.
 	std::function<bool(const SDL_KeyboardEvent&)> onShortcut;
+	// Local find input is independent of whether the program is still running.
+	std::function<bool()> searchFocused;
+	std::function<bool(SDL_Keycode, SDL_Keymod)> claimSearchKey;
+	std::function<bool(SDL_Keycode, SDL_Keymod, std::string_view)> searchKey;
+	std::function<bool(std::string_view)> searchText;
 	// Editing shortcuts the window wants right now (copy/cut with a selection, select all):
 	// claimed keys go to onShortcut instead of the program.
 	std::function<bool(SDL_Keycode, SDL_Keymod)> claimKey;
-	bool claimed(SDL_Keycode key, SDL_Keymod mod) const { return claimKey && claimKey(key, mod); }
+	bool claimed(SDL_Keycode key, SDL_Keymod mod) const {
+		return (claimSearchKey && claimSearchKey(key, mod)) || (claimKey && claimKey(key, mod));
+	}
 	// Offered every key press (with its text, when it types) before it is encoded for the program;
 	// true consumes it. Lets a terminal-side editor selection be replaced or deleted.
 	std::function<bool(SDL_Keycode, SDL_Keymod, std::string_view)> editKey;
 	void setCaret(std::optional<SDL_FRect> outputRect, float toOutputX, float toOutputY);
-	// Direct terminal input, independent of window focus and the OS clipboard.
+	// Synthetic input, independent of window focus and the OS clipboard.
 	bool driveKey(std::string_view description, std::string& error);
 	void driveText(std::string_view text);
-	// Sends text as a paste (bracketed when the program asked for it).
+	// Offers text to find first; otherwise sends a paste (bracketed when requested).
 	void paste(std::string_view text);
 
 private:
-	static bool reservedShortcut(SDL_Keycode key, SDL_Keymod mod);
 	bool handleShortcut(const SDL_KeyboardEvent& event);
 	bool pasteClipboard();
 	void textInput(std::string_view text);
@@ -60,14 +67,15 @@ private:
 		Uint32 vk = 0, sc = 0, state = 0, repeat = 0;
 		std::array<wchar_t, 4> chars{};
 		int count = 0;
-		bool forward = false;
+		bool forward = false, search = false;
 	};
 	// Native Windows scan codes are unprefixed or E0/E1-prefixed, never FFFF.
 	static constexpr Uint16 windowsShortcutTag_ = 0xffff;
 	std::deque<DeferredWindowsKey> pendingShortcuts_;
 	std::array<bool, 256> shortcutKeys_{}, consumedShortcuts_{};
-	std::array<bool, 256> consumedKeys_{};
+	std::array<bool, 256> consumedKeys_{}, searchKeys_{};
 	bool imeComposing_ = false;
+	bool searchPending_ = false;
 	// Characters the last key record already carried; the WM_CHARs TranslateMessage makes from
 	// that key repeat them and are dropped (injected keys arrive with scan code 0, so the scan
 	// code can't tell them apart from VK_PACKET text).

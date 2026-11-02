@@ -32,9 +32,16 @@ From there, use `omp` as usual.
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+Shift+1`–`9` | Jump to tab |
 | `Ctrl+Shift+B` | Toggle sidebar |
+| `Ctrl+Shift+F` | Search the transcript |
 | `Ctrl+Shift+Alt+T` | Split tab into a new window |
 | `Ctrl+Shift+Alt+M` | Merge windows |
 | `F12` | Toggle TSP inspector |
+
+Transcript search (`Cmd+F` on macOS) has case-sensitive (`Aa`) and regular-expression (`.*`) toggles.
+While the search field is focused, `Enter` / `F3` moves to the next match, `Shift+Enter` / `Shift+F3` to the previous,
+`Alt+C` and `Alt+R` toggle the options, and `Esc` closes it. Clicking outside the field returns
+every key to omp (only `F3` still steps through matches) while keeping the highlights. The overview scrollbar
+shows user prompts and search matches; clicking its track jumps to that position.
 
 ## Configuration & Themes
 
@@ -45,6 +52,8 @@ You can edit the theme JSON files to customize colors, window opacity, blur/acry
 For OLED screens, an idle window dims everything except the transcript after 5 minutes; set `"dimAfter"` (seconds, `0` to disable) in `config.json` to change that.
 
 Short UI transitions are on by default; set `"animations": false` in `config.json` to switch them off.
+
+When omp finishes a turn in a tab you aren't looking at, omp-ui shows a Windows notification; set `"notify"` in `config.json` to `"sound"` (sound only) or `"silent"` to change that.
 
 ## Building
 

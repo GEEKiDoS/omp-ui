@@ -39,12 +39,13 @@ void paintPreedit(const Preedit& state, text::Engine& engine, const text::Fonts&
 	if (state.text.empty())
 		return;
 	const float em = fonts.size(), unit = em / 15, padX = em * gfx::space::xs;
-	// The caret is inset 2 units at both ends of its line; the composition sits on the line itself.
-	const float top = caret.y - unit * 2, lineHeight = caret.h + unit * 4;
-	const SDL_FRect box{caret.x - padX, top, state.layout.width + padX * 2, std::max(state.layout.height, lineHeight)};
+	// The caret is inset 2 units at both ends of its line; the composition sits on the line itself,
+	// starting at the caret so the text before it stays visible.
+	const float top = caret.y - unit * 2, lineHeight = caret.h + unit * 4, left = caret.x + padX;
+	const SDL_FRect box{caret.x, top, state.layout.width + padX * 2, std::max(state.layout.height, lineHeight)};
 	gfx::rounded(renderer, box, unit * 3, text::palette::surface);
-	engine.draw(state.runs, state.layout, caret.x, top);
-	const float x = caret.x + (state.layout.caret ? state.layout.caret->x : 0);
+	engine.draw(state.runs, state.layout, left, top);
+	const float x = left + (state.layout.caret ? state.layout.caret->x : 0);
 	gfx::fill(renderer, {x, caret.y, std::max(1.0f, unit * 2), caret.h}, text::palette::accent);
 }
 } // namespace kinds

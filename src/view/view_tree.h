@@ -4,6 +4,7 @@
 #include "gfx/draw.h"
 #include "gfx/tween.h"
 #include "kinds/leaf.h"
+#include "search.h"
 #include <yoga/Yoga.h>
 #include <functional>
 #include <memory>
@@ -113,6 +114,8 @@ public:
 			nextWake = tick;
 	}
 	bool laidOut = false;
+	// Changes to main's searchable presentation, excluding dock/layer input and timers.
+	uint64_t searchRevision = 1;
 	// The minimap's marks for one child of main (child-local output pixels): its frames, code
 	// backgrounds and text lines. Rebuilt only when something under it changed since last asked.
 	const std::vector<kinds::OverviewBar>& overview(tsp::NodeId child);
@@ -127,6 +130,7 @@ private:
 	void sync(tsp::NodeId id);
 	void syncSubtree(tsp::NodeId id);
 	void textChanged(tsp::NodeId id);
+	void searchChanged(tsp::NodeId id);
 	void display(tsp::NodeId id);
 	bool collapsed(tsp::NodeId id) const;
 	bool underComposer(tsp::NodeId id) const;
@@ -197,8 +201,17 @@ public:
 	bool wheel(float x, float y, float deltaPixels);
 	bool handle(const SDL_Event& event, float toOutputX, float toOutputY);
 	bool pointerCaptured() const;
-	// Selection: a terminal-side range in the composer/input (select all, drag, double-click) or
-	// else transcript text (main regions only). Copy/cut take it; typing replaces the editor range.
+	// Find chrome belongs to this tab, not the program's prompt.
+	void openSearch();
+	bool searchFocused() const { return search_.open && search_.focused; }
+	bool claimSearchKey(SDL_Keycode key, SDL_Keymod mod) const;
+	bool searchKey(SDL_Keycode key, SDL_Keymod mod, std::string_view typed = {});
+	bool searchText(std::string_view text);
+	void searchQuery(std::string_view text);
+	void searchOption(std::string_view option, bool enabled);
+	void searchNext(bool previous = false);
+	json searchState() const;
+	// Selection: a terminal-side range in the composer/input or transcript main text.
 	bool hasSelection() const { return selection_.has_value() || hasEditorSelection(); }
 	bool hasEditorSelection() const;
 	void copySelection();
@@ -214,8 +227,8 @@ public:
 	// What is due now: a full paint (a hover card's delay ran out, or a deferred resize settled)
 	// or a timed leaf's frame (its area is in animatedRegions(), so a partial paint suffices).
 	enum class Wake { None, Animation, Full };
-	Wake tick() const;
-	std::optional<SDL_FRect> focusedCaret() const { return caret_; }
+	Wake tick();
+	std::optional<SDL_FRect> focusedCaret() const { return searchFocused() ? search_.caret() : caret_; }
 	std::optional<SDL_FRect> nodeRect(std::string_view surface, std::string_view id) const;
 	std::optional<SDL_FRect> caretRect(std::string_view surface, std::string_view id) const;
 	std::string dirtySummary() const;
@@ -289,6 +302,11 @@ private:
 	// room or nothing scrolls): its scale, how far it scrolls itself, and a slider drag (pointer
 	// y and main scroll at the press).
 	SDL_FRect minimap_{};
+	SDL_FRect scrollbar_{}, scrollThumb_{};
+	std::optional<std::pair<float, float>> scrollbarDrag_;
+	bool scrollbarHover_ = false, scrollbarMarksDirty_ = true;
+	std::vector<float> promptMarkers_;
+	std::vector<Uint8> scrollbarRows_;
 	float minimapScale_ = 0, minimapScroll_ = 0;
 	std::optional<std::pair<float, float>> minimapDrag_;
 	// Whether the last layout left the minimap its lane (only while the transcript scrolls).
@@ -312,6 +330,13 @@ private:
 	std::optional<std::pair<float, float>> asideDrag_;
 	static inline float asidePreferred_ = 400;
 	void paintMinimap(float scroll, float maxScroll, float pad, float mainWidth);
+	void paintScrollbar(float scroll, float maxScroll, float pad);
+	Search search_;
+	uint64_t searchRevision_ = 0;
+	SDL_FRect searchGeometry_{};
+	bool searchGather_ = false;
+	void updateSearch();
+	void revealSearchMatch();
 	void scrollMainTo(float value);
 };
 

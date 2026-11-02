@@ -58,6 +58,18 @@ bool Tree::hoverTool(float x, float y) {
 bool Tree::click(const HitTarget& target, std::string_view gesture, tsp::Session& session) {
 	if (target.kind == TargetKind::Block)
 		return true;
+	// A quick second click is a double-click only where one means something: a row that activates
+	// on it, or a node declaring a `dblclick` action. Elsewhere (fold arrows, buttons, toggles) it
+	// is another click, so folding and at once unfolding works.
+	if (gesture == "dblclick" && target.kind != TargetKind::Select) {
+		bool declared = false;
+		for (auto current = target.node; current && !declared; current = doc_.at(current).parent) {
+			const auto& actions = doc_.at(current).prop("actions");
+			declared = actions.is_object() && actions.contains("dblclick");
+		}
+		if (!declared)
+			gesture = "click";
+	}
 	const bool primary = gesture == "click";
 	const bool doubleClick = gesture == "dblclick";
 	auto send = [&](tsp::NodeId id, std::string_view event, std::string_view item = {}) {
@@ -273,6 +285,7 @@ void Tree::sendEdit(tsp::NodeId id, size_t from, size_t to, std::string_view ins
 bool Tree::scrollAt(float x, float y, float delta) {
 	const auto scrollBy = [&](NodeView& view) {
 		view.wheelScroll(delta, SDL_GetTicks());
+		searchChanged(view.id);
 		transitioning |= view.scroll != view.scrollTween.target();
 	};
 	const auto target = hit(x, y);
@@ -461,6 +474,9 @@ void Views::dismissHover() {
 bool Views::motion(float x, float y, bool refresh) {
 	auto& state = *pointer_;
 	state.position = {x, y};
+	const bool scrollbarHover = contains(scrollbar_, x, y);
+	bool hoverChanged = scrollbarHover != scrollbarHover_;
+	scrollbarHover_ = scrollbarHover;
 	if (state.number && !refresh) {
 		const auto found = trees_.find(state.number->surface);
 		if (found == trees_.end()) {
@@ -477,21 +493,20 @@ bool Views::motion(float x, float y, bool refresh) {
 		                       state.number->track, state.number->startX, x, fonts_.size() / 15);
 		return true;
 	}
-	bool hoverChanged = false;
 	for (auto& tree : painted_)
 		hoverChanged |= tree.get().hoverTool(x, y);
 	if (refresh && state.suppressed)
 		return hoverChanged;
 	if (!refresh)
 		state.suppressed = false;
-	if (state.shown && !state.passThrough && contains(state.cardRect, x, y))
+	if (state.shown && !state.passThrough && !scrollbarHover_ && contains(state.cardRect, x, y))
 		return hoverChanged;
 	std::string_view surface, name, tip;
 	std::optional<SDL_FRect> tipRect;
 	bool hand = false;
 	// The aside's resizable edge takes the pointer before anything under it.
 	const bool resize = contains(asideGrip_, x, y);
-	for (auto it = painted_.rbegin(); !resize && it != painted_.rend(); ++it) {
+	for (auto it = painted_.rbegin(); !resize && !scrollbarHover_ && it != painted_.rend(); ++it) {
 		auto& tree = it->get();
 		const auto hit = tree.hit(x, y);
 		if (!hit)
@@ -574,12 +589,16 @@ int Views::wakeDelay() const {
 		                   : static_cast<int>(std::min<Uint64>(tick - now, std::numeric_limits<int>::max()));
 	};
 	int delay = hoverWakeDelay();
-	for (const int other : {until(nextWake_), until(relayoutAt_)})
+	for (const int other : {until(nextWake_), until(relayoutAt_), until(search_.open ? search_.due : 0)})
 		if (other >= 0)
 			delay = delay < 0 ? other : std::min(delay, other);
 	return delay;
 }
-Views::Wake Views::tick() const {
+Views::Wake Views::tick() {
+	if (search_.open && search_.due && search_.due <= SDL_GetTicks()) {
+		updateSearch();
+		return Wake::Full;
+	}
 	if (hoverWakeDelay() == 0 || (relayoutAt_ && relayoutAt_ <= SDL_GetTicks()))
 		return Wake::Full;
 	return nextWake_ && nextWake_ <= SDL_GetTicks() ? Wake::Animation : Wake::None;
@@ -689,6 +708,18 @@ bool Views::click(float x, float y, std::string_view gesture) {
 }
 
 bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
+	const bool wasFocused = searchFocused();
+	if (!scrollbarDrag_ && !minimapDrag_ && search_.pointer(event, toOutputX, toOutputY)) {
+		if (search_.navigation) {
+			const bool previous = search_.navigation < 0;
+			search_.navigation = 0;
+			searchNext(previous);
+		}
+		dismissHover();
+		return true;
+	}
+	if (wasFocused && !searchFocused())
+		search_.preedit({}, 0, 0);
 	const bool hadHover = pointer_->shown || !pointer_->node.empty();
 	switch (event.type) {
 	case SDL_EVENT_MOUSE_MOTION:
@@ -699,6 +730,16 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 			const float wanted = asideDrag_->second + (asideDrag_->first - x) / scale;
 			const float most = std::max(300.0f, lastViewport_.w / scale - 360);
 			asidePreferred_ = std::clamp(wanted, 300.0f, most);
+			return true;
+		}
+		if (scrollbarDrag_) {
+			const float x = event.motion.x * toOutputX, y = event.motion.y * toOutputY;
+			pointer_->position = {x, y};
+			scrollbarHover_ = contains(scrollbar_, x, y);
+			const float travel = scrollbar_.h - scrollThumb_.h;
+			if (travel > 0)
+				scrollMainTo(scrollbarDrag_->second
+				             + (y - scrollbarDrag_->first) * std::max(0.0f, contentHeight_ - mainClip_.h) / travel);
 			return true;
 		}
 		if (minimapDrag_) {
@@ -760,6 +801,25 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 			asidePreferred_ = std::clamp((lastViewport_.w - mainClip_.w) / scale, 300.0f, most);
 			asideDrag_ = std::pair{event.button.x * toOutputX, asidePreferred_};
 			dismissHover();
+			if (systemPointer_)
+				SDL_CaptureMouse(true);
+			return true;
+		}
+		if (event.button.button == SDL_BUTTON_LEFT
+		    && contains(scrollbar_, event.button.x * toOutputX, event.button.y * toOutputY)) {
+			const float x = event.button.x * toOutputX, y = event.button.y * toOutputY;
+			const float travel = scrollbar_.h - scrollThumb_.h;
+			// A track press centres the thumb at the pointer, then becomes the same immediate drag.
+			if (travel > 0 && (y < scrollThumb_.y || y > scrollThumb_.y + scrollThumb_.h))
+				scrollMainTo((y - scrollbar_.y - scrollThumb_.h * 0.5f) * std::max(0.0f, contentHeight_ - mainClip_.h)
+				             / travel);
+			else
+				scrollMainTo(mainScroll_);
+			scrollbarDrag_ = std::pair{y, mainScroll_};
+			scrollbarHover_ = true;
+			pointer_->position = {x, y};
+			dismissHover();
+			pointer_->suppressed = true;
 			if (systemPointer_)
 				SDL_CaptureMouse(true);
 			return true;
@@ -869,6 +929,14 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 				SDL_CaptureMouse(false);
 			return true;
 		}
+		if (scrollbarDrag_ && event.button.button == SDL_BUTTON_LEFT) {
+			scrollbarDrag_.reset();
+			pointer_->position = {event.button.x * toOutputX, event.button.y * toOutputY};
+			scrollbarHover_ = contains(scrollbar_, pointer_->position.x, pointer_->position.y);
+			if (systemPointer_)
+				SDL_CaptureMouse(false);
+			return true;
+		}
 		if (minimapDrag_ && event.button.button == SDL_BUTTON_LEFT) {
 			minimapDrag_.reset();
 			if (systemPointer_)
@@ -949,6 +1017,10 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 		             -event.wheel.y * fonts_.lineHeight() * 3)
 		    || hadHover;
 	case SDL_EVENT_TEXT_EDITING:
+		if (searchFocused()) {
+			search_.preedit(event.edit.text ? event.edit.text : "", event.edit.start, event.edit.length);
+			return true;
+		}
 		if (active_)
 			active_->get().setPreedit(event.edit.text ? event.edit.text : "", event.edit.start, event.edit.length);
 		dismissHover();
@@ -956,6 +1028,8 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 		return true;
 	case SDL_EVENT_TEXT_INPUT:
 	case SDL_EVENT_WINDOW_FOCUS_LOST:
+		if (searchFocused())
+			search_.preedit({}, 0, 0);
 		if (active_)
 			active_->get().setPreedit({}, 0, 0);
 		[[fallthrough]];
@@ -972,7 +1046,7 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 			SDL_SetCursor(pointer_->arrow.get());
 		pointer_->position = {-1, -1};
 		pointer_->cursor = PointerState::Cursor::Arrow;
-		return hadHover;
+		return std::exchange(scrollbarHover_, false) || hadHover;
 	default:
 		break;
 	}
@@ -1291,7 +1365,8 @@ bool Tree::interactiveAt(float x, float y) const {
 }
 
 bool Views::pointerCaptured() const {
-	return pointer_->number.has_value() || selecting_ || editorDrag_.has_value() || asideDrag_.has_value();
+	return pointer_->number.has_value() || selecting_ || editorDrag_.has_value() || asideDrag_.has_value()
+	    || minimapDrag_.has_value() || scrollbarDrag_.has_value();
 }
 
 std::string Views::selectionText() {

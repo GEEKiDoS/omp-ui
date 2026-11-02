@@ -4,6 +4,8 @@
 
 #include <SDL3/SDL.h>
 
+#include <string_view>
+
 namespace app {
 
 // Creation flags for omp-ui's own caption (title_bar.h): borderless where the window system
@@ -15,5 +17,11 @@ SDL_WindowFlags frameFlags();
 // (`backdrop`) behind a translucent window (`translucent`: created with an alpha framebuffer).
 // Safe to call again after a config reload. Elsewhere a no-op.
 void styleWindow(SDL_Window& window, const Theme& theme, bool translucent);
+
+// Draws attention to a window in the back after omp finished a turn or rang the bell: the system
+// notification sound, and with `toast` a desktop notification (Windows: from a tray icon that
+// lives for the window's lifetime; clicking it raises the window) titled `title` saying `message`.
+// The taskbar button flashes either way.
+void notify(SDL_Window& window, bool toast, std::string_view title, std::string_view message);
 
 } // namespace app

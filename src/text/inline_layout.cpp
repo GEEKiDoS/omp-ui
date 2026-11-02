@@ -25,6 +25,10 @@ struct Token {
 struct Line {
 	std::vector<Piece> pieces;
 	float width = 0;
+	// Unhinted glyphs have fractional advances, but shaped widths come back as whole pixels: a piece
+	// grown from separately measured tokens is short by up to a pixel per token. `slack` bounds that
+	// error; the line is measured again as whole pieces when it matters (see settle in layout()).
+	float slack = 0;
 };
 
 size_t boundaryBefore(std::string_view value, size_t offset) {
@@ -398,23 +402,47 @@ Layout Engine::layout(const Runs& runs, const LayoutOptions& options) const {
 		return last.width - chrome(run, last.begin, last.end) + glyphs(run, begin, end, raw)
 		     + chrome(run, last.begin, end);
 	};
-	auto projected = [&](size_t run, size_t begin, size_t end, float raw = -1) {
-		const auto& line = lines.back();
-		if (mergeable(run, begin))
-			return line.pieces.back().x + merged(run, begin, end, raw);
-		return line.width + glyphs(run, begin, end, raw) + chrome(run, begin, end);
+	// Re-measures each piece of the line as one string (as it is drawn), placing them again.
+	auto settle = [&](Line& line) {
+		float x = 0;
+		for (auto& piece : line.pieces) {
+			piece.x = x;
+			if (!piece.ellipsis && piece.begin != piece.end && !controlPiece(runs, piece))
+				piece.width = glyphs(piece.run, piece.begin, piece.end, -1) + chrome(piece.run, piece.begin, piece.end);
+			x += piece.width;
+		}
+		line.width = x;
+		line.slack = 0;
 	};
-	auto place = [&](size_t run, size_t begin, size_t end, float raw = -1) {
+	auto projected = [&](size_t run, size_t begin, size_t end, float raw = -1) {
+		auto& line = lines.back();
+		const auto estimate = [&] {
+			if (mergeable(run, begin))
+				return line.pieces.back().x + merged(run, begin, end, raw);
+			return line.width + glyphs(run, begin, end, raw) + chrome(run, begin, end);
+		};
+		const float approximate = estimate();
+		// Close to the edge the rounding error could decide the wrap: measure exactly.
+		if (line.slack > 0 && approximate <= width && approximate + line.slack + 1 > width) {
+			settle(line);
+			return estimate();
+		}
+		return approximate;
+	};
+	// `parts`: how many separately measured tokens `raw` sums.
+	auto place = [&](size_t run, size_t begin, size_t end, float raw = -1, int parts = 1) {
 		auto& line = lines.back();
 		if (mergeable(run, begin)) {
 			auto& last = line.pieces.back();
 			last.width = merged(run, begin, end, raw);
 			last.end = end;
 			line.width = last.x + last.width;
+			line.slack += static_cast<float>(parts);
 		} else {
 			const float measured = glyphs(run, begin, end, raw) + chrome(run, begin, end);
 			line.pieces.push_back({run, begin, end, line.width, measured});
 			line.width += measured;
+			line.slack += static_cast<float>(parts - 1);
 		}
 	};
 	auto split = [&](size_t tokenIndex) {
@@ -481,6 +509,7 @@ Layout Engine::layout(const Runs& runs, const LayoutOptions& options) const {
 			continue;
 		}
 		if (options.wrap == Wrap::None) {
+			const size_t first = index;
 			size_t end = token.end;
 			float raw = tokenWidths[index];
 			++index;
@@ -489,7 +518,7 @@ Layout Engine::layout(const Runs& runs, const LayoutOptions& options) const {
 				raw += tokenWidths[index];
 				end = tokens[index++].end;
 			}
-			place(token.run, token.begin, end, raw);
+			place(token.run, token.begin, end, raw, static_cast<int>(index - first));
 			continue;
 		}
 		if (options.wrap == Wrap::Word && token.kind == TokenKind::Text) {
@@ -514,6 +543,10 @@ Layout Engine::layout(const Runs& runs, const LayoutOptions& options) const {
 			split(index);
 		++index;
 	}
+	// Pieces then match what is drawn: the caret, the next piece and line alignment depend on it.
+	for (auto& line : lines)
+		if (line.slack > 0)
+			settle(line);
 
 	const bool clampLines = options.maxLines > 0 && lines.size() > static_cast<size_t>(options.maxLines);
 	std::vector<Line> visible;
@@ -682,7 +715,50 @@ void Engine::paintSelection(const Runs& runs, const Layout& layout, float x, flo
 	}
 }
 
+void Engine::paintHighlight(const Runs& runs, const Layout& layout, float x, float y, size_t begin, size_t end,
+                            bool current, float opacity) {
+	const float lineHeight = layout.lineHeight > 0 ? layout.lineHeight : fonts_.lineHeight();
+	size_t base = 0, run = 0;
+	for (const auto& piece : layout.pieces) {
+		while (run < piece.run)
+			base += runs[run++].text.size();
+		const auto& style = runs[piece.run].style;
+		const size_t from = std::max(begin, base + piece.begin), to = std::min(end, base + piece.end);
+		if (from > to || (from == to && begin != end) || piece.ellipsis || style.chrome
+		    || fontFor(style) == FontId::Icons || controlPiece(runs, piece))
+			continue;
+		const auto value = std::string_view(runs[piece.run].text).substr(piece.begin, piece.end - piece.begin);
+		const float padding = codePadding(style, fonts_);
+		const auto font = fontFor(style);
+		const float left = x + piece.x;
+		const float x0 = from == base + piece.begin
+		                   ? left
+		                   : left + padding + fonts_.width(font, value.substr(0, from - base - piece.begin));
+		const float x1 = to == base + piece.end
+		                   ? left + piece.width
+		                   : left + padding + fonts_.width(font, value.substr(0, to - base - piece.begin));
+		const SDL_FRect rect{x0, y + static_cast<float>(piece.line) * lineHeight, std::max(1.0f, x1 - x0), lineHeight};
+		auto color = withAlpha(palette::warning, current ? 125 : 58);
+		color.a = static_cast<Uint8>(std::lround(static_cast<float>(color.a) * opacity));
+		gfx::fill(renderer_, rect, color);
+		if (current) {
+			color = withAlpha(palette::warning, static_cast<Uint8>(std::lround(220 * opacity)));
+			gfx::roundedBorder(renderer_, rect, 0, color, std::max(1.0f, fonts_.size() / 15));
+		}
+		if (begin == end)
+			break;
+	}
+}
+
 void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, float opacity) {
+	if (capture) {
+		SDL_Rect rect{};
+		SDL_GetRenderClipRect(&renderer_, &rect);
+		capture(runs, layout, x, y,
+		        {static_cast<float>(rect.x), static_cast<float>(rect.y), static_cast<float>(rect.w),
+		         static_cast<float>(rect.h)});
+		return;
+	}
 	if (!engine_)
 		return;
 	const float lineHeight = layout.lineHeight > 0 ? layout.lineHeight : fonts_.lineHeight();
@@ -710,6 +786,8 @@ void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, floa
 			SDL_RenderFillRect(&renderer_, &rect);
 		}
 	}
+	if (decorate)
+		decorate(runs, layout, x, y, opacity);
 	if (selection_)
 		paintSelection(runs, layout, x, y, lineHeight, opacity);
 	for (const auto& piece : layout.pieces) {
@@ -883,6 +961,8 @@ void Engine::clear() {
 }
 
 void Engine::drawImage(const gfx::Image& image, const SDL_FRect& rect, float opacity) {
+	if (capture)
+		return; // Off-screen text gathering must not decode or upload transcript pictures.
 	// GPU drivers keep freed texture memory pooled, so the budget, not trimming, bounds what
 	// pictures cost: about two full-width screenshots; this frame's pictures are never evicted.
 	constexpr size_t pictureBudget = 8 * 1024 * 1024;

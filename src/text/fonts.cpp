@@ -78,6 +78,11 @@ bool Fonts::load(float displayScale, std::string& error) {
 		}
 	}
 #endif
+	// Unhinted outlines everywhere: hinting snaps strokes to the pixel grid, which at 100 % scale
+	// distorts CJK strokes and letter shapes; unhinted text keeps the proportions it has on hi-DPI
+	// screens, only softer.
+	for (const auto& face : fallback_)
+		TTF_SetFontHinting(face.get(), TTF_HINTING_NONE);
 	constexpr std::array<std::string_view, 8> names = {
 	    "Inter-Regular.ttf",         "Inter-Bold.ttf",         "Inter-Italic.ttf",          "Inter-Bold.ttf",
 	    "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf", "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"};
@@ -87,6 +92,7 @@ bool Fonts::load(float displayScale, std::string& error) {
 			error = SDL_GetError();
 			return false;
 		}
+		TTF_SetFontHinting(fonts_[i].get(), TTF_HINTING_NONE);
 		if (i == 3 || i == 6 || i == 7)
 			TTF_SetFontStyle(fonts_[i].get(), TTF_STYLE_ITALIC);
 		for (const auto& face : fallback_)
@@ -98,6 +104,7 @@ bool Fonts::load(float displayScale, std::string& error) {
 		error = SDL_GetError();
 		return false;
 	}
+	TTF_SetFontHinting(wordmark.get(), TTF_HINTING_NONE);
 	for (const auto& face : fallback_)
 		TTF_AddFallbackFont(wordmark.get(), face.get());
 	measureRises();

@@ -5,6 +5,10 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <dwmapi.h>
+#include <shellapi.h>
+#include <algorithm>
+#include <span>
+#include <string>
 #endif
 
 namespace app {
@@ -13,6 +17,13 @@ namespace app {
 namespace {
 
 constexpr wchar_t previousProc[] = L"omp-ui.previous-wndproc";
+// The notification tray icon's callback message; a window's icon exists once it has notified.
+constexpr UINT trayMessage = WM_APP + 77;
+constexpr wchar_t trayProp[] = L"omp-ui.tray";
+
+NOTIFYICONDATAW trayIcon(HWND hwnd) {
+	return {.cbSize = sizeof(NOTIFYICONDATAW), .hWnd = hwnd, .uID = 1};
+}
 
 // Windows 11 is build 22000. GetVersionEx reports what the manifest declares, RtlGetVersion
 // the real build.
@@ -48,8 +59,20 @@ LRESULT CALLBACK frameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
 		}
 		return 0;
 	}
-	if (message == WM_NCDESTROY)
+	// Clicking the notification (or the tray icon) brings the window to the front.
+	if (message == trayMessage && (LOWORD(lParam) == NIN_BALLOONUSERCLICK || LOWORD(lParam) == WM_LBUTTONUP)) {
+		if (IsIconic(hwnd))
+			ShowWindow(hwnd, SW_RESTORE);
+		SetForegroundWindow(hwnd);
+		return 0;
+	}
+	if (message == WM_NCDESTROY) {
 		RemovePropW(hwnd, previousProc);
+		if (RemovePropW(hwnd, trayProp)) {
+			auto data = trayIcon(hwnd);
+			Shell_NotifyIconW(NIM_DELETE, &data);
+		}
+	}
 	return CallWindowProcW(previous, hwnd, message, wParam, lParam);
 }
 
@@ -130,12 +153,54 @@ void styleWindow(SDL_Window& window, const Theme& theme, bool translucent) {
 	// Disabled again (Backdrop::None) when a reloaded theme drops it.
 	setAccent(hwnd, translucent && theme.transparent() ? theme.backdrop : Theme::Backdrop::None);
 }
+
+void notify(SDL_Window& window, bool toast, std::string_view title, std::string_view message) {
+	SDL_FlashWindow(&window, SDL_FLASH_UNTIL_FOCUSED);
+	const auto hwnd = static_cast<HWND>(
+	    SDL_GetPointerProperty(SDL_GetWindowProperties(&window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+	if (!toast) {
+		MessageBeep(MB_ICONINFORMATION);
+		return;
+	}
+	// A tray icon's balloon is a regular Windows 10/11 notification (sound included) without the
+	// app registration a toast needs. The icon stays (hidden in the overflow) while the window lives.
+	auto data = trayIcon(hwnd);
+	data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_INFO;
+	data.uCallbackMessage = trayMessage;
+	data.hIcon = reinterpret_cast<HICON>(GetClassLongPtrW(hwnd, GCLP_HICON));
+	if (!data.hIcon)
+		data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+	data.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
+	// Fixed-size fields: convert, then cut to fit.
+	const auto copy = [](std::string_view from, std::span<wchar_t> to) {
+		std::wstring wide(static_cast<size_t>(
+		                      MultiByteToWideChar(CP_UTF8, 0, from.data(), static_cast<int>(from.size()), nullptr, 0)),
+		                  L'\0');
+		MultiByteToWideChar(CP_UTF8, 0, from.data(), static_cast<int>(from.size()), wide.data(),
+		                    static_cast<int>(wide.size()));
+		const size_t length = std::min(wide.size(), to.size() - 1);
+		std::copy_n(wide.begin(), length, to.begin());
+		to[length] = L'\0';
+	};
+	copy(title, data.szInfoTitle);
+	copy(message, data.szInfo);
+	copy("omp-ui", data.szTip);
+	// The first notification adds the icon, later ones update it.
+	if (!GetPropW(hwnd, trayProp) && Shell_NotifyIconW(NIM_ADD, &data))
+		SetPropW(hwnd, trayProp, hwnd);
+	else
+		Shell_NotifyIconW(NIM_MODIFY, &data);
+}
 #else
 SDL_WindowFlags frameFlags() {
 	return SDL_WINDOW_BORDERLESS;
 }
 
 void styleWindow(SDL_Window&, const Theme&, bool) {}
+
+void notify(SDL_Window& window, bool, std::string_view, std::string_view) {
+	SDL_FlashWindow(&window, SDL_FLASH_UNTIL_FOCUSED);
+}
 #endif
 
 } // namespace app

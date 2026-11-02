@@ -432,14 +432,16 @@ int main(int argc, char* argv[]) {
 				if (!found || found->get().tabs.empty())
 					return false;
 				auto& current = found->get();
-				if (current.input->claimed(key.key, key.mod)) {
-					auto& views = current.tabs[current.active]->views;
+				auto& views = current.tabs[current.active]->views;
+				if (current.input->claimKey && current.input->claimKey(key.key, key.mod)) {
 					if (key.key == SDLK_C)
 						views.copySelection();
 					else if (key.key == SDLK_X)
 						views.cutSelection();
-					else
+					else if (key.key == SDLK_A)
 						views.selectAll();
+					else
+						return false;
 					current.dirty = true;
 					return true;
 				}
@@ -503,6 +505,34 @@ int main(int argc, char* argv[]) {
 					return false;
 				actions.push_back({*kind, id, index});
 				return true;
+			};
+			window.input->searchFocused = [&, id] {
+				const auto found = findWindow(id);
+				return found && !found->get().tabs.empty()
+				    && found->get().tabs[found->get().active]->views.searchFocused();
+			};
+			window.input->claimSearchKey = [&, id](SDL_Keycode key, SDL_Keymod mod) {
+				const auto found = findWindow(id);
+				return found && !found->get().tabs.empty()
+				    && found->get().tabs[found->get().active]->views.claimSearchKey(key, mod);
+			};
+			window.input->searchKey = [&, id](SDL_Keycode key, SDL_Keymod mod, std::string_view typed) {
+				if ((app::Input::reservedShortcut(key, mod) && key != SDLK_F) || key == SDLK_F12)
+					return false;
+				const auto found = findWindow(id);
+				if (!found || found->get().tabs.empty())
+					return false;
+				const bool consumed = found->get().tabs[found->get().active]->views.searchKey(key, mod, typed);
+				found->get().dirty |= consumed;
+				return consumed;
+			};
+			window.input->searchText = [&, id](std::string_view typed) {
+				const auto found = findWindow(id);
+				if (!found || found->get().tabs.empty())
+					return false;
+				const bool consumed = found->get().tabs[found->get().active]->views.searchText(typed);
+				found->get().dirty |= consumed;
+				return consumed;
 			};
 			window.input->claimKey = [&, id](SDL_Keycode key, SDL_Keymod mod) {
 			// Copy/cut only take the key while something is selected; otherwise it belongs to the program (Ctrl+C).
@@ -1740,7 +1770,7 @@ int main(int argc, char* argv[]) {
 		// A program that exits normally (code 0, e.g. omp's /exit) closes its tab; one that fails
 		// keeps it, with the exit code and Restart. Closed after the walk: closing a window's last
 		// tab may close the window.
-		std::vector<std::pair<SDL_WindowID, const app::Tab*>> finished;
+		std::vector<std::pair<SDL_WindowID, std::reference_wrapper<const app::Tab>>> finished;
 		for (auto& window : windows) {
 			for (size_t i = 0; i < window->tabs.size(); ++i) {
 				auto& tab = *window->tabs[i];
@@ -1753,7 +1783,14 @@ int main(int argc, char* argv[]) {
 				if (i == window->active && titleGeneration != tab.titleGeneration)
 					SDL_SetWindowTitle(window->window.get(), (tab.title + " — omp-ui").c_str());
 				if (!exited && tab.exited && tab.exitCode == 0)
-					finished.emplace_back(window->id(), &tab);
+					finished.emplace_back(window->id(), tab);
+				// omp rings or notifies at the end of a turn: worth a sound or a toast only when the user
+				// isn't looking at that tab. Hidden test runs never notify.
+				if (const auto message = std::exchange(tab.notification, std::nullopt);
+				    message && drivePath.empty() && theme.notify != app::Theme::Notify::Silent
+				    && (i != window->active || !(SDL_GetWindowFlags(window->window.get()) & SDL_WINDOW_INPUT_FOCUS)))
+					app::notify(*window->window, theme.notify == app::Theme::Notify::Notify, tab.title,
+					            message->empty() ? "Finished" : *message);
 				tabMetrics(*window, tab);
 			}
 			if (!window->tabs.empty()) {
@@ -1767,7 +1804,7 @@ int main(int argc, char* argv[]) {
 			if (const auto found = findWindow(id)) {
 				auto& window = found->get();
 				const auto at = std::find_if(window.tabs.begin(), window.tabs.end(),
-				                             [&](const auto& candidate) { return candidate.get() == tab; });
+				                             [&](const auto& candidate) { return candidate.get() == &tab.get(); });
 				if (at != window.tabs.end())
 					closeTab(window, static_cast<size_t>(at - window.tabs.begin()));
 			}

@@ -69,6 +69,11 @@ public:
 	const std::string& selectedText() const { return selectedText_; }
 	// Draws a decoded picture into `rect`, uploading its pixels once per picture, size and renderer.
 	void drawImage(const gfx::Image& image, const SDL_FRect& rect, float opacity = 1);
+	// A transcript gather visits the same visible pieces without shaping or drawing glyphs.
+	std::function<void(const Runs&, const Layout&, float, float, SDL_FRect)> capture;
+	std::function<void(const Runs&, const Layout&, float, float, float)> decorate;
+	void paintHighlight(const Runs& runs, const Layout& layout, float x, float y, size_t begin, size_t end,
+	                    bool current, float opacity);
 
 private:
 	struct CacheKey {

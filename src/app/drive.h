@@ -5,13 +5,16 @@
 // --drive script.txt [--at frame]. One UTF-8 step per line; # lines are comments.
 // wait ms | waitfor timeout-ms regex | text UTF-8 | key ctrl+c / enter+shift
 // paste UTF-8 | move/click/dblclick/rclick/mclick x y | drag x1 y1 x2 y2 (left press, move, release)
+// down x y | up x y hold/release the left button across steps (for mid-drag captures).
 // wheel x y lines | resize w h | drop path (omp-ui: a folder or file dropped on the window)
 // scale factor | shot file.png | log file.txt | nodes file.json | reveal node-id | quit
+// Transcript search: find UTF-8 | findopt case|regex on|off | findnext | findprev | findstate file.json.
+// preedit UTF-8 shows uncommitted IME composition in the focused local/program field.
 // App tabs: tab cwd (active) | tabbg cwd (background) | tabcmd JSON | tabs file.json.
 // tabcmd supplies cwd/argv/active; tabs dumps tab, pid and log metadata.
 // App windows: window N | newwindow | merge | idle (start the OLED idle fade now)
 // tabdrag fromWindow tabIndex targetWindow|new insertIndex (all indices 1-based).
-// Text/paste recognize \\n, \\r, \\t and \\\\; other arguments are literal (no quotes).
+// Text/paste/find/preedit recognize \\n, \\r, \\t and \\\\; other arguments are literal (no quotes).
 // Coordinates and resize dimensions are content/output pixels, independent of DPI.
 // waitfor searches inspector traffic and decoded surface properties; timeout or a
 // bad step exits nonzero. nodes dumps IDs/properties plus painted rect/caret boxes;

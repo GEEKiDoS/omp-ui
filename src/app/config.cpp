@@ -86,7 +86,7 @@ void writeDefaults(const std::filesystem::path& folder) {
 	if (std::filesystem::exists(folder / "config.json", error))
 		return;
 	std::filesystem::create_directories(folder / "themes", error);
-	writeJson(folder / "config.json", {{"theme", "dark"}, {"animations", true}});
+	writeJson(folder / "config.json", {{"theme", "dark"}, {"animations", true}, {"notify", "notify"}});
 	for (const bool dark : {true, false}) {
 		const auto file = folder / "themes" / (dark ? "dark.json" : "light.json");
 		if (!std::filesystem::exists(file, error))
@@ -191,6 +191,17 @@ Theme applyTheme(bool userConfig, const std::filesystem::path& configFile) {
 			theme.animations = config["animations"].get<bool>();
 		else
 			SDL_Log("config.json: \"animations\" is not a boolean");
+	}
+	if (config.is_object() && config.contains("notify")) {
+		const auto value = config["notify"].is_string() ? config["notify"].get<std::string>() : std::string();
+		if (value == "silent")
+			theme.notify = Theme::Notify::Silent;
+		else if (value == "sound")
+			theme.notify = Theme::Notify::Sound;
+		else if (value == "notify")
+			theme.notify = Theme::Notify::Notify;
+		else
+			SDL_Log("config.json: \"notify\" is not \"silent\", \"sound\" or \"notify\"");
 	}
 	gfx::animations = theme.animations;
 	// Test runs keep the built-in palettes even when the user edited themes/dark.json.
