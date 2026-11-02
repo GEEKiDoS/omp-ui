@@ -100,7 +100,20 @@ bool Fonts::load(float displayScale, std::string& error) {
 	}
 	for (const auto& face : fallback_)
 		TTF_AddFallbackFont(wordmark.get(), face.get());
+	measureRises();
 	return true;
+}
+
+void Fonts::measureRises() {
+	// SDL_ttf lowers a whole string by however far a glyph reaches above the face's height box;
+	// an emoji is the tallest glyph text normally carries.
+	constexpr std::string_view emoji = "\xF0\x9F\x98\x80";
+	for (size_t i = 0; i < fonts_.size(); ++i) {
+		int width = 0, height = 0;
+		rises_[i] = fonts_[i] && TTF_GetStringSize(fonts_[i].get(), emoji.data(), emoji.size(), &width, &height)
+		              ? std::max(0.0f, static_cast<float>(height - TTF_GetFontHeight(fonts_[i].get())))
+		              : 0;
+	}
 }
 
 void Fonts::setScale(float displayScale) {
@@ -112,6 +125,7 @@ void Fonts::setScale(float displayScale) {
 			TTF_SetFontSize(fonts_[i].get(), size_ * (i == static_cast<size_t>(FontId::Wordmark) ? 2 : 1));
 	for (auto& cache : widths_)
 		cache.clear();
+	measureRises();
 }
 
 float Fonts::width(FontId id, std::string_view value) const {

@@ -19,6 +19,8 @@ omp-ui [folder]
 omp-ui [folder] -- omp [args...]
 ```
 
+The command can run omp on another machine over ssh: `omp-ui -- ssh -t host omp` (omp and bun must be on the PATH of ssh's non-interactive shell there). Dropped files paste local paths, which a remote omp can't open.
+
 From there, use `omp` as usual.
 
 ### Shortcuts

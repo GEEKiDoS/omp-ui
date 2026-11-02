@@ -19,7 +19,8 @@ size_t editorSourceOffset(const tsp::Node& node, const std::vector<EditorSpan>& 
 SDL_Color cardFill(const tsp::Node& node);
 SDL_Color cardBorder(const tsp::Node& node);
 float toastOpacity(const tsp::Node& node, Uint64 arrived);
-void paintMark(const tsp::Node& node, SDL_Renderer& renderer, const SDL_FRect& rect, float scale, bool previousPick,
-               bool nextPick);
+// Rewind marks: `pick` highlights a block from behind (painted before it), `drop` dims it (after).
+void paintPick(SDL_Renderer& renderer, const SDL_FRect& rect, float em, float scale, bool previousPick, bool nextPick);
+void paintDrop(SDL_Renderer& renderer, const SDL_FRect& rect, float scale);
 
 } // namespace kinds

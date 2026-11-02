@@ -511,7 +511,10 @@ LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, c
 			                         std::max(0.0f, rect.h - cache.padY * 2)};
 			{
 				gfx::ScopedClip textClip(renderer, viewport);
-				engine.draw(cache.runs, cache.layout, x, y);
+				// An empty editor shows its placeholder, which gives way to an IME composition.
+				const bool composing = focused && !cache.preedit.text.empty();
+				if (!(composing && node.str("text").empty()))
+					engine.draw(cache.runs, cache.layout, x, y);
 				cache.textOrigin = {x, y};
 				result.animating = shimmerVisible(cache.runs, cache.layout, fonts, x, y, textClip.visible);
 				if (focused && !node.flag("readonly") && result.caret) {

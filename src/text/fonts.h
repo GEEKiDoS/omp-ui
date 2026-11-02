@@ -29,6 +29,9 @@ public:
 	float size() const { return size_; }
 	float lineHeight() const { return static_cast<float>(TTF_GetFontLineSkip(&get(FontId::Ui))); }
 	float monoAdvance() const { return width(FontId::Mono, "M"); }
+	// How far a colour emoji (from a fallback face) rises above `id`'s own glyph box: a line
+	// holding one needs that much more room above its baseline.
+	float fallbackRise(FontId id) const { return rises_[static_cast<size_t>(id)]; }
 
 private:
 	// Shaped widths of short strings (words): layout asks for the same tokens over and over.
@@ -42,6 +45,8 @@ private:
 	std::array<Font, static_cast<size_t>(FontId::Count)> fonts_;
 	mutable std::array<WidthCache, static_cast<size_t>(FontId::Count)> widths_;
 	float size_ = 15;
+	std::array<float, static_cast<size_t>(FontId::Count)> rises_{};
+	void measureRises();
 };
 
 } // namespace text

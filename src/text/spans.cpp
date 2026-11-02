@@ -15,6 +15,11 @@ bool contains(std::string_view value, std::string_view word) {
 
 std::optional<SDL_Color> tokenColor(std::string_view token) {
 	using namespace palette;
+	// The composer's shell modes, as omp's own palette colours them (bash teal, Python warning).
+	if (contains(token, "bashmode"))
+		return info;
+	if (contains(token, "pythonmode"))
+		return warning;
 	if (contains(token, "error") || contains(token, "fail") || contains(token, "removed"))
 		return error;
 	if (contains(token, "warn"))

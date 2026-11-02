@@ -65,6 +65,9 @@ public:
 	// The width of a docked aside (omp's settings sheet) at `preferred` (pixels at scale 1, as the
 	// user dragged it), clamped so the transcript keeps room; the whole width when narrow.
 	float asideWidth(float viewportWidth, float preferred) const;
+	// A screen surface showing a page that fills the window (/git, full-screen pickers and
+	// settings, omp's debug and setup pages); not the rewind page, which looks like the transcript.
+	bool appPage() const;
 	float presentedAsideWidth(float layoutWidth) const;
 	// Set its stable endpoint width before transcript layout, then reserve the revealed part.
 	bool prepareAside(float layoutWidth, bool immediate);

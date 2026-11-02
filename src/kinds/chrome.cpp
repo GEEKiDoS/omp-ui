@@ -180,19 +180,21 @@ float toastOpacity(const tsp::Node& node, Uint64 arrived) {
 	return static_cast<float>(std::clamp((node.num("ttl", 4000) - age) / 400.0, 0.0, 1.0));
 }
 
-void paintMark(const tsp::Node& node, SDL_Renderer& renderer, const SDL_FRect& rect, float scale, bool previousPick,
-               bool nextPick) {
-	if (node.str("mark") == "drop") {
-		gfx::rounded(renderer, rect, 8 * scale, text::withAlpha(text::palette::bg, 165));
-	} else if (node.str("mark") == "pick") {
-		const auto tint = text::withAlpha(text::palette::accent, 22);
-		gfx::rounded(renderer, rect, 8 * scale, tint);
-		if (previousPick)
-			gfx::fill(renderer, {rect.x, rect.y, rect.w, 8 * scale}, tint);
-		if (nextPick)
-			gfx::fill(renderer, {rect.x, rect.y + rect.h - 8 * scale, rect.w, 8 * scale}, tint);
-		gfx::fill(renderer, {rect.x, rect.y, 3 * scale, rect.h}, text::withAlpha(text::palette::accent, 160));
-	}
+void paintPick(SDL_Renderer& renderer, const SDL_FRect& rect, float em, float scale, bool previousPick, bool nextPick) {
+	// Outset into the column's margin and half the gap to the neighbours, so the content keeps its
+	// place and margins inside the highlight and consecutive picked blocks join into one band.
+	const float side = em * gfx::space::md, gap = em * gfx::space::md * 0.5f, radius = 8 * scale;
+	const SDL_FRect box{rect.x - side, rect.y - gap, rect.w + side * 2, rect.h + gap * 2};
+	const auto tint = text::withAlpha(text::palette::accent, 22);
+	gfx::rounded(renderer, box, radius, tint);
+	if (previousPick)
+		gfx::fill(renderer, {box.x, box.y, box.w, radius}, tint);
+	if (nextPick)
+		gfx::fill(renderer, {box.x, box.y + box.h - radius, box.w, radius}, tint);
+	gfx::fill(renderer, {box.x, box.y, 3 * scale, box.h}, text::withAlpha(text::palette::accent, 160));
+}
+void paintDrop(SDL_Renderer& renderer, const SDL_FRect& rect, float scale) {
+	gfx::rounded(renderer, rect, 8 * scale, text::withAlpha(text::palette::bg, 165));
 }
 
 } // namespace kinds

@@ -45,6 +45,17 @@ FetchContent_Declare(SDL3_ttf
 	GIT_SUBMODULES external/freetype external/harfbuzz
 	GIT_SUBMODULES_RECURSE FALSE)
 FetchContent_MakeAvailable(SDL3_ttf)
+# Upstream fix after 3.2.2 (libsdl-org/SDL_ttf fc8d545, "Make the fallback fonts use the same
+# ascent value as the main font"): 3.2.2 puts each fallback glyph on its own face's baseline, so
+# CJK and emoji from a taller face sit lower than the Latin text beside them. Applied to the
+# sources before they build; drop it once the pinned release includes the commit.
+set(SDL_TTF_C "${sdl3_ttf_SOURCE_DIR}/src/SDL_ttf.c")
+file(READ "${SDL_TTF_C}" SDL_TTF_SOURCE)
+string(REPLACE "pos->y = y + F26Dot6(pos->font->ascent) - pos->y_offset;"
+               "pos->y = y + F26Dot6(font->ascent) - pos->y_offset;" SDL_TTF_PATCHED "${SDL_TTF_SOURCE}")
+if(NOT SDL_TTF_PATCHED STREQUAL SDL_TTF_SOURCE)
+	file(WRITE "${SDL_TTF_C}" "${SDL_TTF_PATCHED}")
+endif()
 if(UNIX)
 	# SDL_ttf embeds FreeType objects, so its PNG/zlib link requirements must follow.
 	target_link_libraries(SDL3_ttf-static PRIVATE PNG::PNG ZLIB::ZLIB)

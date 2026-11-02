@@ -14,6 +14,24 @@ namespace {
 
 constexpr wchar_t previousProc[] = L"omp-ui.previous-wndproc";
 
+// Windows 11 is build 22000. GetVersionEx reports what the manifest declares, RtlGetVersion
+// the real build.
+DWORD windowsBuild() {
+	using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+	static const DWORD build = [] {
+		OSVERSIONINFOW info{};
+		info.dwOSVersionInfoSize = sizeof(info);
+		const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+		const auto get = ntdll ? reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
+		return get && get(&info) == 0 ? info.dwBuildNumber : DWORD{0};
+	}();
+	return build;
+}
+bool windows10() {
+	const auto build = windowsBuild();
+	return build != 0 && build < 22000;
+}
+
 // The client area covers the whole window, so omp-ui draws its own caption, while the window
 // keeps its captioned style: DWM still gives it a shadow, rounded corners, snapping and the
 // minimise/maximise animations, which a WS_POPUP window loses.
@@ -40,9 +58,18 @@ void removeFrame(HWND hwnd) {
 		SetPropW(hwnd, previousProc, reinterpret_cast<HANDLE>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)));
 		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(frameProc));
 	}
-	// A one-pixel frame inside the client keeps DWM drawing the shadow.
-	const MARGINS margins{0, 0, 0, 1};
-	DwmExtendFrameIntoClientArea(hwnd, &margins);
+	if (windows10()) {
+		// Windows 10 draws a window's 1-pixel border as part of its frame, the top edge of it over
+		// a client that covers the frame; keeping the standard frame instead shows that border on
+		// all four sides. Without frame rendering neither shows (nor does the shadow, the price
+		// on Windows 10). Windows 11 draws its border outside the window.
+		const DWMNCRENDERINGPOLICY policy = DWMNCRP_DISABLED;
+		DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+	} else {
+		// A one-pixel frame inside the client keeps DWM drawing the shadow.
+		const MARGINS margins{0, 0, 0, 1};
+		DwmExtendFrameIntoClientArea(hwnd, &margins);
+	}
 	SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
 	             SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
 }
@@ -94,10 +121,11 @@ void styleWindow(SDL_Window& window, const Theme& theme, bool translucent) {
 	    SDL_GetPointerProperty(SDL_GetWindowProperties(&window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 	if (!hwnd)
 		return;
-	// DWMWA_USE_IMMERSIVE_DARK_MODE, by number so older SDK headers still build.
-	constexpr DWORD immersiveDarkMode = 20;
+	// DWMWA_USE_IMMERSIVE_DARK_MODE, by number so older SDK headers still build: 20 since
+	// Windows 10 20H1, 19 before it. It also darkens Windows 10's window border.
 	const BOOL dark = text::darkPalette;
-	DwmSetWindowAttribute(hwnd, immersiveDarkMode, &dark, sizeof(dark));
+	if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark))))
+		DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
 	removeFrame(hwnd);
 	// Disabled again (Backdrop::None) when a reloaded theme drops it.
 	setAccent(hwnd, translucent && theme.transparent() ? theme.backdrop : Theme::Backdrop::None);

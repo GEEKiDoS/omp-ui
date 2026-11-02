@@ -228,6 +228,10 @@ int main(int argc, char* argv[]) {
 	// SDL keeps the display awake and the screensaver off by default (meant for games); a terminal
 	// must let the system blank and sleep the screen.
 	SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
+	// omp-ui draws the IME composition (the romaji/pinyin being typed) at the prompt's caret
+	// itself (kinds::paintPreedit); the system still draws the candidate list. Without this, SDL
+	// on Windows leaves composition to the IME's own window, which current IMEs don't show.
+	SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
 		return fail(SDL_GetError());
 	auto theme = app::applyTheme(drivePath.empty(), configFile); // Hidden runs never create the user's config.
@@ -1733,6 +1737,10 @@ int main(int argc, char* argv[]) {
 		}
 		if (!running)
 			break;
+		// A program that exits normally (code 0, e.g. omp's /exit) closes its tab; one that fails
+		// keeps it, with the exit code and Restart. Closed after the walk: closing a window's last
+		// tab may close the window.
+		std::vector<std::pair<SDL_WindowID, const app::Tab*>> finished;
 		for (auto& window : windows) {
 			for (size_t i = 0; i < window->tabs.size(); ++i) {
 				auto& tab = *window->tabs[i];
@@ -1744,6 +1752,8 @@ int main(int argc, char* argv[]) {
 				              || working != tab.running || titleGeneration != tab.titleGeneration;
 				if (i == window->active && titleGeneration != tab.titleGeneration)
 					SDL_SetWindowTitle(window->window.get(), (tab.title + " — omp-ui").c_str());
+				if (!exited && tab.exited && tab.exitCode == 0)
+					finished.emplace_back(window->id(), &tab);
 				tabMetrics(*window, tab);
 			}
 			if (!window->tabs.empty()) {
@@ -1753,6 +1763,14 @@ int main(int argc, char* argv[]) {
 			if (window->dirty || window->due || (interval && SDL_GetTicks() >= window->lastPaint + interval))
 				paint(*window);
 		}
+		for (const auto& [id, tab] : finished)
+			if (const auto found = findWindow(id)) {
+				auto& window = found->get();
+				const auto at = std::find_if(window.tabs.begin(), window.tabs.end(),
+				                             [&](const auto& candidate) { return candidate.get() == tab; });
+				if (at != window.tabs.end())
+					closeTab(window, static_cast<size_t>(at - window.tabs.begin()));
+			}
 	}
 	SDL_RemoveEventWatch(watch, &liveResize);
 	windows.clear();

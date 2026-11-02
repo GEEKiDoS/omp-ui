@@ -85,8 +85,12 @@ private:
 		FontId font;
 		Uint32 color;
 		std::unique_ptr<TTF_Text, TextDeleter> text;
+		// How far SDL_ttf moved the text down inside its box: a glyph rising above the font's ascent
+		// (an emoji from a taller fallback face) shifts the whole line by its overshoot. Drawing
+		// subtracts it, so every piece keeps the line's baseline.
+		float top = 0;
 	};
-	std::optional<std::reference_wrapper<TTF_Text>> cached(FontId font, SDL_Color color, std::string_view value);
+	const Cached* cached(FontId font, SDL_Color color, std::string_view value);
 	void paintSelection(const Runs& runs, const Layout& layout, float x, float y, float lineHeight, float opacity);
 	SDL_Renderer& renderer_;
 	Fonts& fonts_;

@@ -43,6 +43,22 @@ size_t boundaryAfter(std::string_view value, size_t offset) {
 	return offset;
 }
 
+// Colour emoji, which only a fallback face draws: the supplementary pictographs (4-byte UTF-8,
+// U+1F000 and up) and the BMP's Miscellaneous Symbols and Dingbats (U+2600–U+27BF).
+bool hasEmoji(std::string_view value) {
+	for (size_t i = 0; i < value.size(); ++i) {
+		const auto lead = static_cast<unsigned char>(value[i]);
+		if (lead >= 0xF0)
+			return true;
+		if (lead == 0xE2 && i + 1 < value.size()) {
+			const auto next = static_cast<unsigned char>(value[i + 1]);
+			if (next >= 0x98 && next <= 0x9E) // U+2600–U+27BF
+				return true;
+		}
+	}
+	return false;
+}
+
 FontId fontFor(const RunStyle& style) {
 	return style.icon ? FontId::Icons : style.font;
 }
@@ -316,6 +332,7 @@ Layout Engine::layout(const Runs& runs, const LayoutOptions& options) const {
 	bases.reserve(runs.size() + 1);
 	bases.push_back(0);
 	bool hasInlineCode = false;
+	float rise = 0;
 	for (const auto& run : runs) {
 		bases.push_back(bases.back() + run.text.size());
 		hasInlineCode |= run.style.inlineCode && !run.text.empty();
@@ -327,7 +344,12 @@ Layout Engine::layout(const Runs& runs, const LayoutOptions& options) const {
 			result.ascent = std::max(result.ascent, static_cast<float>(TTF_GetFontAscent(&font)));
 			measuredFonts[index] = true;
 		}
+		// An emoji (drawn from a taller fallback face) needs room above the line's other text.
+		if (fonts_.fallbackRise(fontId) > rise && hasEmoji(run.text))
+			rise = fonts_.fallbackRise(fontId);
 	}
+	result.lineHeight += rise;
+	result.ascent += rise;
 	if (hasInlineCode) {
 		const float padding = fonts_.size() * gfx::space::xs;
 		result.lineHeight += padding * 2;
@@ -575,24 +597,26 @@ size_t Engine::CacheHash::operator()(const CacheKey& key) const {
 	return hash ^ (static_cast<size_t>(key.font) + 0x9e3779b9u + (hash << 6) + (hash >> 2));
 }
 
-std::optional<std::reference_wrapper<TTF_Text>> Engine::cached(FontId font, SDL_Color color, std::string_view value) {
+const Engine::Cached* Engine::cached(FontId font, SDL_Color color, std::string_view value) {
 	const CacheKey key{font, colorKey(color), value};
 	if (const auto found = index_.find(key); found != index_.end()) {
 		cache_.splice(cache_.begin(), cache_, found->second);
-		return std::ref(*found->second->text);
+		return &*found->second;
 	}
 	std::unique_ptr<TTF_Text, TextDeleter> text(
 	    TTF_CreateText(engine_.get(), &fonts_.get(font), value.data(), value.size()));
 	if (!text || !TTF_SetTextColor(text.get(), color.r, color.g, color.b, color.a))
-		return std::nullopt;
-	cache_.push_front({std::string(value), font, key.color, std::move(text)});
+		return nullptr;
+	TTF_SubString first{};
+	const float top = TTF_GetTextSubString(text.get(), 0, &first) ? static_cast<float>(first.rect.y) : 0;
+	cache_.push_front({std::string(value), font, key.color, std::move(text), top});
 	index_.emplace(CacheKey{font, key.color, cache_.front().value}, cache_.begin());
 	if (cache_.size() > cacheLimit) {
 		const auto last = std::prev(cache_.end());
 		index_.erase(CacheKey{last->font, last->color, last->value});
 		cache_.erase(last);
 	}
-	return std::ref(*cache_.front().text);
+	return &cache_.front();
 }
 
 void Engine::paintSelection(const Runs& runs, const Layout& layout, float x, float y, float lineHeight, float opacity) {
@@ -698,8 +722,10 @@ void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, floa
 			const auto value = valueFor(runs, piece);
 			if (!value.empty()) {
 				const FontId font = fontFor(style, piece);
-				text = cached(font, style.color, value);
-				textY += baseline - static_cast<float>(TTF_GetFontAscent(&fonts_.get(font)));
+				if (const auto entry = cached(font, style.color, value)) {
+					text = *entry->text;
+					textY += baseline - static_cast<float>(TTF_GetFontAscent(&fonts_.get(font))) - entry->top;
+				}
 			}
 		}
 		auto colorAt = [&](float at) {
@@ -716,7 +742,10 @@ void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, floa
 			if (text) {
 				if (style.fx != 0 || opacity != 1)
 					TTF_SetTextColor(&text->get(), color.r, color.g, color.b, color.a);
-				TTF_DrawRendererText(&text->get(), left + padding, textY);
+				// Whole pixels: glyphs come from a nearest-sampled atlas packed without gaps, and at a
+				// fractional position some drivers (seen on Windows 10 at 100 %) sample the column of
+				// the neighbouring glyph, leaving stray ticks and cut edges.
+				TTF_DrawRendererText(&text->get(), std::round(left + padding), std::round(textY));
 			}
 			if (piece.width == 0 || newlinePiece(runs, piece))
 				return;
@@ -829,12 +858,12 @@ Hit Engine::hit(const Runs& runs, const Layout& layout, float x, float y) {
 		return result;
 	}
 	const FontId font = fontFor(style);
-	if (auto text = cached(font, style.color, value)) {
+	if (const auto text = cached(font, style.color, value)) {
 		TTF_SubString substring{};
-		const float offset = baseline - static_cast<float>(TTF_GetFontAscent(&fonts_.get(font)));
+		const float offset = baseline - static_cast<float>(TTF_GetFontAscent(&fonts_.get(font))) - text->top;
 		const float localX = x - piece.x - padding;
 		const float localY = y - static_cast<float>(line) * lineHeight - offset;
-		if (TTF_GetTextSubStringForPoint(&text->get(), static_cast<int>(std::floor(localX)),
+		if (TTF_GetTextSubStringForPoint(text->text.get(), static_cast<int>(std::floor(localX)),
 		                                 static_cast<int>(std::floor(localY)), &substring)) {
 			const bool rtl = (substring.flags & TTF_SUBSTRING_DIRECTION_MASK) == TTF_DIRECTION_RTL;
 			const bool right =

@@ -169,6 +169,12 @@ bool wideString(std::string_view text, std::wstring& result, std::string& err) {
 void appendArgument(std::wstring& command, std::wstring_view argument) {
 	if (!command.empty())
 		command += L' ';
+	// Plain arguments go bare: some programs read their raw command line rather than CRT argv
+	// (wsl.exe takes a quoted "-d" for a Linux command, not its distribution option).
+	if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) {
+		command += argument;
+		return;
+	}
 	command += L'"';
 	size_t slashes = 0;
 	for (const wchar_t ch : argument) {

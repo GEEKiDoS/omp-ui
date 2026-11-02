@@ -66,6 +66,11 @@ SDL_Color tone(const tsp::Node& node, SDL_Color fallback) {
 bool contains(const SDL_FRect& rect, float x, float y) {
 	return x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
 }
+// The prompt composer: `omp.editor`, or `omp.editor.bash`/`omp.editor.python` while the prompt
+// starts with `!`/`$` (the same shell, with a mode label beside the input).
+bool composer(std::string_view role) {
+	return role == "omp.editor" || role == "omp.editor.bash" || role == "omp.editor.python";
+}
 bool hasPreview(const tsp::Node& node) {
 	const auto& preview = node.prop("preview");
 	return preview.is_object() || (node.kind == tsp::Kind::Card && preview == "auto")
@@ -286,7 +291,7 @@ bool Tree::underComposer(tsp::NodeId id) const {
 	if ((kind == tsp::Kind::Tool || kind == tsp::Kind::Card) && nestedFrame(id))
 		return true;
 	for (auto parent = doc_.at(id).parent; parent; parent = doc_.at(parent).parent)
-		if (doc_.at(parent).str("role") == "omp.editor"
+		if (composer(doc_.at(parent).str("role"))
 		    || (kind == tsp::Kind::Code && doc_.at(parent).kind == tsp::Kind::Tool))
 			return true;
 	return false;
@@ -515,7 +520,7 @@ void Tree::sync(tsp::NodeId id) {
 		const float lines = max.is_object() ? max.value("lines", 8.0f) : max.is_number() ? max.get<float>() : 8.0f;
 		YGNodeStyleSetMaxHeight(yoga, lines * (pitch + em * gfx::space::sm * 2));
 		YGNodeStyleSetOverflow(yoga, YGOverflowScroll);
-	} else if (node.kind == tsp::Kind::Col && node.str("role") == "omp.editor") {
+	} else if (node.kind == tsp::Kind::Col && composer(node.str("role"))) {
 		YGNodeStyleSetPadding(yoga, YGEdgeHorizontal, em * gfx::space::lg);
 		YGNodeStyleSetPadding(yoga, YGEdgeTop, pitch + em * (gfx::space::xs + gfx::space::lg));
 		YGNodeStyleSetPadding(yoga, YGEdgeBottom, em * gfx::space::lg);
@@ -567,6 +572,11 @@ void Tree::sync(tsp::NodeId id) {
 		YGNodeStyleSetFlexGrow(yoga, 1);
 		YGNodeStyleSetFlexShrink(yoga, 1);
 		YGNodeStyleSetFlexBasis(yoga, 0);
+	} else if (role == "omp.job.tiles") {
+		// omp asks for no gap between tiles (a terminal frames them); here they are columns with a
+		// gutter and a divider (painted in paintNode), and wrapped rows a little apart.
+		YGNodeStyleSetGap(yoga, YGGutterColumn, em * gfx::space::xl);
+		YGNodeStyleSetGap(yoga, YGGutterRow, em * gfx::space::md);
 	} else if (role == "omp.job.tile" && node.prop("grow").is_null()) {
 		// Tiles share their (wrapping) row, so each head's id and clock sit at the tile's end.
 		YGNodeStyleSetFlexGrow(yoga, 1);
@@ -640,7 +650,8 @@ void Tree::sync(tsp::NodeId id) {
 	if (node.id == "main" && node.parent == doc_.root()) {
 		YGNodeStyleSetOverflow(yoga, YGOverflowScroll);
 		YGNodeStyleSetFlexShrink(yoga, 0);
-		// One centred reading column, shared with the dock below; screen pages keep the full width.
+		// One centred reading column, shared with the dock below; screens decide at layout, when
+		// their children are known (see appPage()).
 		if (surface_.mode != "screen") {
 			YGNodeStyleSetWidthPercent(yoga, 100);
 			YGNodeStyleSetMaxWidth(yoga, em * columnEms);
@@ -880,10 +891,23 @@ void Tree::layout(float width, float viewportHeight) {
 				if ((node.kind == tsp::Kind::Picker || node.kind == tsp::Kind::Prefs) && node.parent
 				    && doc_.at(node.parent).id == "main")
 					YGNodeStyleSetHeight(view->yoga.get(), std::max(1.0f, viewportHeight));
-				// A screen surface is a page, not a transcript: main is the viewport's height
-				// and an app page (`omp.app.*`, e.g. /git) fills it, scrolling its own panes.
-				if (surface_.mode == "screen" && node.id == "main" && node.parent == doc_.root())
-					YGNodeStyleSetHeight(view->yoga.get(), std::max(1.0f, viewportHeight));
+				// An app page: main is the viewport's height and full width, and the page fills it,
+				// scrolling its own panes. Other screens (the rewind page) get the reading column and
+				// scroll main like a transcript.
+				if (surface_.mode == "screen" && node.id == "main" && node.parent == doc_.root()) {
+					const auto yoga = view->yoga.get();
+					if (appPage()) {
+						YGNodeStyleSetHeight(yoga, std::max(1.0f, viewportHeight));
+						YGNodeStyleSetWidthAuto(yoga);
+						YGNodeStyleSetMaxWidth(yoga, YGUndefined);
+						YGNodeStyleSetAlignSelf(yoga, YGAlignAuto);
+					} else {
+						YGNodeStyleSetHeightAuto(yoga);
+						YGNodeStyleSetWidthPercent(yoga, 100);
+						YGNodeStyleSetMaxWidth(yoga, fonts_.size() * columnEms);
+						YGNodeStyleSetAlignSelf(yoga, YGAlignCenter);
+					}
+				}
 				if (surface_.mode == "screen" && node.parent && doc_.at(node.parent).id == "main"
 				    && node.str("role").starts_with("omp.app")) {
 					YGNodeStyleSetFlexGrow(view->yoga.get(), 1);
@@ -1106,11 +1130,24 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		targets_.add({rect.x, rect.y, rect.w,
 		              view.headerHeight > 0 ? view.headerHeight + em * 0.5f : std::min(rect.h, pitch + em * 0.6f)},
 		             TargetKind::Toggle);
+	if (node.parent && node.str("mark") == "pick") {
+		const auto& siblings = doc_.at(node.parent).children;
+		const auto position = std::find(siblings.begin(), siblings.end(), id);
+		const bool previousPick = position != siblings.begin() && doc_.at(*std::prev(position)).str("mark") == "pick";
+		const bool nextPick =
+		    std::next(position) != siblings.end() && doc_.at(*std::next(position)).str("mark") == "pick";
+		kinds::paintPick(renderer, rect, em, scale, previousPick, nextPick);
+	}
+	// A job tile after another on the same row: a divider in the middle of the gutter.
+	if (node.str("role") == "omp.job.tile" && YGNodeLayoutGetLeft(yoga) > 0.5f) {
+		const float x = std::round(rect.x - em * gfx::space::xl * 0.5f);
+		gfx::fill(renderer, {x, rect.y, std::max(1.0f, scale), rect.h}, text::palette::border);
+	}
 	bool animating = false;
 	if (node.kind == tsp::Kind::Card && !view.frameless) {
 		gfx::rounded(renderer, rect, 11 * scale, kinds::cardFill(node));
 		gfx::roundedBorder(renderer, rect, 11 * scale, kinds::cardBorder(node), scale);
-	} else if (node.kind == tsp::Kind::Col && node.str("role") == "omp.editor") {
+	} else if (node.kind == tsp::Kind::Col && composer(node.str("role"))) {
 		const float context = pitch + em * gfx::space::xs;
 		const SDL_FRect box{rect.x, rect.y + context, rect.w, std::max(0.0f, rect.h - context)};
 		gfx::rounded(renderer, box, 12 * scale, text::palette::surface);
@@ -1308,14 +1345,8 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 			}
 		}
 	}
-	bool previousPick = false, nextPick = false;
-	if (node.parent && node.str("mark") == "pick") {
-		const auto& siblings = doc_.at(node.parent).children;
-		const auto position = std::find(siblings.begin(), siblings.end(), id);
-		previousPick = position != siblings.begin() && doc_.at(*std::prev(position)).str("mark") == "pick";
-		nextPick = std::next(position) != siblings.end() && doc_.at(*std::next(position)).str("mark") == "pick";
-	}
-	kinds::paintMark(node, renderer, rect, scale, previousPick, nextPick);
+	if (node.str("mark") == "drop")
+		kinds::paintDrop(renderer, rect, scale);
 	if ((scrollBox || scrollLeaf) && view.scrollMax > 0) {
 		const float content = rect.h + view.scrollMax, thumb = std::max(em * 1.5f, rect.h * rect.h / content);
 		gfx::rounded(
@@ -1341,6 +1372,10 @@ std::optional<SDL_FRect> Tree::focusedCaret() const {
 		return std::nullopt;
 	const auto rect = gfx::intersect(*at(*focus).caret, at(*focus).hitRect);
 	return rect.w > 0 && rect.h > 0 ? std::optional(rect) : std::nullopt;
+}
+bool Tree::appPage() const {
+	// The rewind page replays the transcript's own blocks, so it reads like the transcript.
+	return surface_.mode == "screen" && surface_.role != "omp.rewind";
 }
 float Tree::asideWidth(float viewportWidth, float preferred) const {
 	const auto layer = doc_.find("layer");
@@ -1643,7 +1678,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	// While the transcript scrolls, the minimap has a lane at the right edge (its width plus a
 	// gap to the window edge) and the column and dock centre in the area left of it, so their
 	// margins match on both sides; otherwise they centre in the whole width.
-	const float em = fonts_.size(), pad = screen ? 0 : em * gfx::space::lg;
+	const float em = fonts_.size();
 	kept_.clear();
 	for (const auto& surface : session_.surfaces()) {
 		if (screen) {
@@ -1656,6 +1691,10 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 				kept_.push_back(tree(*surface));
 		}
 	}
+	// App pages (/git) span the content edge to edge; the transcript and other screens (rewind)
+	// get the reading column's margins and the minimap.
+	const bool page = active_ && active_->get().appPage();
+	const float pad = page ? 0 : em * gfx::space::lg;
 	if (!active_ && kept_.empty())
 		return false;
 	scrollOwner_ = active_;
@@ -1749,8 +1788,8 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	};
 	// Last frame's choice first. Flipping it settles at once: the lane only narrows the column
 	// (taller, still scrolling) and dropping it only widens it (shorter, still fitting).
-	layOut(minimapLane_ && !screen);
-	if (!screen && (maxScroll > 0) != minimapLane_) {
+	layOut(minimapLane_ && !page);
+	if (!page && (maxScroll > 0) != minimapLane_) {
 		minimapLane_ = maxScroll > 0;
 		layOut(minimapLane_);
 	}
@@ -1824,7 +1863,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		const auto main = scrollOwner_ ? scrollOwner_->get().document().find("main") : std::nullopt;
 		const float mainWidth = main ? YGNodeLayoutGetWidth(scrollOwner_->get().at(*main).yoga.get()) : 0;
 		if (maxScroll > 0 && mainClip_.h > 0) {
-			if (!screen && mainWidth > 0) {
+			if (!page && mainWidth > 0) {
 				minimap_ = {content.x + content.w - em * (minimapEms + 1), content.y, em * minimapEms, content.h};
 				paintMinimap(scroll, maxScroll, pad, mainWidth);
 			}
