@@ -41,6 +41,20 @@ struct CodeCache {
 	float padX = 0, padY = 0, gutter = 0, oldColumn = 0, newColumn = 0, signColumn = 0;
 	float headerHeight = 0, bodyHeight = 0, contentHeight = 0, moreHeight = 0;
 	int start = 1, preview = 0;
+	// Collapsed previews show at most `budget` pixels of the block (0: no limit); lines past it
+	// get an estimated height instead of a layout, and only the first `laidLines` are laid out.
+	float budget = 0, laidBudget = 0;
+	size_t laidLines = 0;
+	// `mode: "split"` diffs: old on the left, new on the right. Each row holds a line per side
+	// (npos: none on that side; a context line sits on both); hunk/meta rows span both.
+	struct SplitRow {
+		size_t left = std::string::npos, right = std::string::npos;
+		float y = 0, height = 0;
+		bool full = false;
+	};
+	bool split = false;
+	std::vector<SplitRow> rows;
+	float half = 0, sideGutter = 0;
 	bool synced = false, dirty = true, diff = false, chromeless = false;
 	bool numbers = false, wrap = true, expanded = false;
 };

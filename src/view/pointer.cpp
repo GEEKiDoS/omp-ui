@@ -248,9 +248,20 @@ void Tree::sendEdit(tsp::NodeId id, size_t from, size_t to, std::string_view ins
 }
 
 bool Tree::scrollAt(float x, float y, float delta) {
+	const auto scrollBy = [&](NodeView& view) {
+		view.scroll = std::clamp(view.scroll + delta, 0.0f, view.scrollMax);
+		view.stick = view.scroll >= view.scrollMax - 2;
+	};
 	const auto target = hit(x, y);
-	if (!target)
+	if (!target) {
+		// No target under the pointer (plain text in a pane): the innermost scrolling box.
+		for (auto it = scrollers_.rbegin(); it != scrollers_.rend(); ++it)
+			if (contains(it->first, x, y) && at(it->second).scrollMax > 0) {
+				scrollBy(at(it->second));
+				return true;
+			}
 		return false;
+	}
 	for (auto current = target->get().node; current; current = doc_.at(current).parent) {
 		auto& view = at(current);
 		if (view.leaf.picker && kinds::scrollPicker(*view.leaf.picker, x, y, delta))
@@ -259,8 +270,7 @@ bool Tree::scrollAt(float x, float y, float delta) {
 			return true;
 		if (view.scrollMax <= 0)
 			continue;
-		view.scroll = std::clamp(view.scroll + delta, 0.0f, view.scrollMax);
-		view.stick = view.scroll >= view.scrollMax - 2;
+		scrollBy(view);
 		return true;
 	}
 	for (const auto& entry : targets_.entries())
@@ -506,17 +516,21 @@ int Views::hoverWakeDelay() const {
 	return elapsed >= delay ? 0 : static_cast<int>(delay - elapsed);
 }
 int Views::wakeDelay() const {
-	const int hover = hoverWakeDelay();
-	if (!nextWake_)
-		return hover;
 	const Uint64 now = SDL_GetTicks();
-	const int animation =
-	    nextWake_ <= now ? 0 : static_cast<int>(std::min<Uint64>(nextWake_ - now, std::numeric_limits<int>::max()));
-	return hover < 0 ? animation : std::min(hover, animation);
+	const auto until = [&](Uint64 tick) {
+		return !tick       ? -1
+		     : tick <= now ? 0
+		                   : static_cast<int>(std::min<Uint64>(tick - now, std::numeric_limits<int>::max()));
+	};
+	int delay = hoverWakeDelay();
+	for (const int other : {until(nextWake_), until(relayoutAt_)})
+		if (other >= 0)
+			delay = delay < 0 ? other : std::min(delay, other);
+	return delay;
 }
 Views::Wake Views::tick() const {
-	if (hoverWakeDelay() == 0)
-		return Wake::Hover;
+	if (hoverWakeDelay() == 0 || (relayoutAt_ && relayoutAt_ <= SDL_GetTicks()))
+		return Wake::Full;
 	return nextWake_ && nextWake_ <= SDL_GetTicks() ? Wake::Animation : Wake::None;
 }
 

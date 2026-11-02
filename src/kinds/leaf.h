@@ -27,6 +27,9 @@ struct LeafCache {
 	float textScrollX = 0, textScrollY = 0;
 	bool expanded = false, collapsed = false;
 	float opacity = 1;
+	// Set by the view: a collapsed preview above this leaf shows at most this many pixels of it
+	// (0: no limit), so long blocks need not lay out what can't be seen.
+	float budget = 0;
 	Preedit preedit;
 	// Editors: visible-run ↔ source mapping, where the text was last drawn, and a terminal-side
 	// selection (UTF-16 from/to) for select-all/cut/copy, which omp's editor has no notion of.

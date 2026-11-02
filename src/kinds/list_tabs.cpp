@@ -50,6 +50,7 @@ void forgetListTabs(ListTabsCache& cache, text::Engine& engine) {
 void syncListTabs(const tsp::Node& node, ListTabsCache& cache, text::Engine& engine, const text::Fonts& fonts) {
 	forgetListTabs(cache, engine);
 	cache = {};
+	cache.dense = node.str("role").starts_with("omp.app.");
 	const auto foreground = node.flag("disabled") ? text::palette::dim : text::palette::fg;
 	const float em = fonts.size(), pad = em * gfx::space::sm, gap = em * gfx::space::sm;
 	const float pillPad = em * gfx::space::md;
@@ -112,8 +113,9 @@ SDL_FPoint measureListTabs(const tsp::Node& node, ListTabsCache& cache, text::En
 	width = std::max(0.0f, width);
 	if (cache.width != width) {
 		cache.width = width;
-		const float em = fonts.size(), pad = em * gfx::space::sm, gap = em * gfx::space::sm;
-		const float pillPad = em * gfx::space::md, pillTop = em * gfx::space::xs;
+		const float em = fonts.size(), pad = em * (cache.dense ? gfx::space::xs : gfx::space::sm),
+		            gap = em * gfx::space::sm;
+		const float pillPad = em * gfx::space::md, pillTop = cache.dense ? 0 : em * gfx::space::xs;
 		if (node.kind == tsp::Kind::Item) {
 			const float inset = std::min(pad, width * 0.5f), end = width - inset;
 			cache.left = inset;
@@ -177,8 +179,8 @@ SDL_FPoint measureListTabs(const tsp::Node& node, ListTabsCache& cache, text::En
 bool paintListTabs(const tsp::Node& node, ListTabsCache& cache, text::Engine& engine, const text::Fonts& fonts,
                    SDL_Renderer& renderer, const SDL_FRect& rect, view::HitTargets& hits) {
 	measureListTabs(node, cache, engine, fonts, rect.w);
-	const float em = fonts.size(), unit = em / 15, pad = em * gfx::space::sm;
-	const float pillPad = em * gfx::space::md, pillTop = em * gfx::space::xs;
+	const float em = fonts.size(), unit = em / 15, pad = em * (cache.dense ? gfx::space::xs : gfx::space::sm);
+	const float pillPad = em * gfx::space::md, pillTop = cache.dense ? 0 : em * gfx::space::xs;
 	if (node.kind == tsp::Kind::Item) {
 		const float inset = std::min(pad, rect.w * 0.5f);
 		engine.draw(cache.icon.runs, cache.icon.layout, rect.x + inset,

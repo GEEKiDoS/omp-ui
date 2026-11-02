@@ -28,6 +28,8 @@ struct NodeView {
 	std::optional<bool> collapsed;
 	float scroll = 0;
 	float scrollMax = 0;
+	// Collapsed with a preview: the most of its content it can show (pixels, 0: no limit).
+	float previewBudget = 0;
 	std::string selected;
 	Uint64 arrived = SDL_GetTicks();
 	bool stick = true, paintDirty = true, priorityHidden = false, frameless = false, listEmpty = false;
@@ -114,6 +116,9 @@ private:
 	bool underComposer(tsp::NodeId id) const;
 	bool nestedFrame(tsp::NodeId id) const;
 	bool descendant(tsp::NodeId node, tsp::NodeId ancestor) const;
+	// The preview budget a leaf inherits from its nearest collapsed-preview ancestor (0: none).
+	float budgetFor(tsp::NodeId id) const;
+	void remeasureLeaves(tsp::NodeId id);
 	void toolLayout(tsp::NodeId id, float width);
 	void statusLayout(tsp::NodeId id, float width);
 	void listLayout(tsp::NodeId id, float width);
@@ -128,6 +133,10 @@ private:
 	std::vector<std::unique_ptr<NodeView>> nodes_;
 	HitTargets targets_;
 	tsp::NodeId hoveredTool_ = 0;
+	// Scrollable boxes and leaves painted in the last full paint (visible rect, node), parents
+	// first: the wheel scrolls the innermost one under the pointer.
+	std::vector<std::pair<SDL_FRect, tsp::NodeId>> scrollers_;
+	bool partial_ = false;
 	float width_ = -1, viewportHeight_ = 0;
 	struct Overview {
 		uint64_t signature = 0;
@@ -175,9 +184,9 @@ public:
 	// The selected text in reading order, including parts scrolled out of view (repaints once).
 	std::string selectionText();
 	int wakeDelay() const;
-	// What is due now: a hover card's delay (needs a full paint) or a timed leaf's frame (its
-	// area is in animatedRegions(), so a partial paint suffices).
-	enum class Wake { None, Animation, Hover };
+	// What is due now: a full paint (a hover card's delay ran out, or a deferred resize settled)
+	// or a timed leaf's frame (its area is in animatedRegions(), so a partial paint suffices).
+	enum class Wake { None, Animation, Full };
 	Wake tick() const;
 	std::optional<SDL_FRect> focusedCaret() const { return caret_; }
 	std::optional<SDL_FRect> nodeRect(std::string_view surface, std::string_view id) const;
@@ -255,6 +264,11 @@ private:
 	std::optional<std::pair<float, float>> minimapDrag_;
 	// Whether the last layout left the minimap its lane (only while the transcript scrolls).
 	bool minimapLane_ = false;
+	// Re-wrapping a long transcript at a new width can take hundreds of milliseconds, so while
+	// the window is being resized the column keeps its laid-out width until the size settles.
+	float laidWidth_ = -1, pendingWidth_ = -1;
+	Uint64 pendingSince_ = 0, relayoutAt_ = 0;
+	bool slowRelayout_ = false;
 	std::vector<SDL_Vertex> minimapVertices_;
 	std::vector<int> minimapIndices_;
 	void paintMinimap(float scroll, float maxScroll, float pad, float mainWidth);

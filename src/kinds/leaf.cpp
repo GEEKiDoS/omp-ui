@@ -240,7 +240,10 @@ void sync(const tsp::Node& node, LeafCache& cache, text::Engine& engine, const t
 	cache.options.truncate = truncate == "start"  ? text::Truncate::Start
 	                       : truncate == "middle" ? text::Truncate::Middle
 	                                              : text::Truncate::End;
-	cache.options.maxLines = static_cast<int>(node.num("lines"));
+	// An explicit `truncate` without `lines` asks for one line cut where it says (a path, a branch).
+	cache.options.maxLines = node.prop("lines").is_number()    ? static_cast<int>(node.num("lines"))
+	                       : node.prop("truncate").is_string() ? 1
+	                                                           : 0;
 
 	if (editor(node.kind)) {
 		cache.textScrollX = scrollX;
@@ -339,6 +342,7 @@ SDL_FPoint measure(const tsp::Node& node, LeafCache& cache, text::Engine& engine
 		return measureMd(*cache.md, engine, fonts, width);
 	case tsp::Kind::Code:
 	case tsp::Kind::Diff:
+		cache.code->budget = cache.budget;
 		return measureCode(node, *cache.code, engine, fonts, width, cache.expanded);
 	case tsp::Kind::Ansi:
 		return measureAnsi(node, *cache.ansi, engine, fonts, width, cache.expanded);
@@ -449,6 +453,7 @@ LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, c
 		return {.animating = paintMd(*cache.md, engine, fonts, renderer, rect, hits)};
 	case tsp::Kind::Code:
 	case tsp::Kind::Diff:
+		cache.code->budget = cache.budget;
 		return {.animating = paintCode(node, *cache.code, engine, fonts, renderer, rect, cache.expanded, hits)};
 	case tsp::Kind::Ansi:
 		return {.animating = paintAnsi(node, *cache.ansi, engine, fonts, renderer, rect, cache.expanded, hits)};
@@ -642,7 +647,7 @@ void overview(const tsp::Node& node, const LeafCache& cache, const text::Fonts& 
 		const auto& code = *cache.code;
 		const float top = code.headerHeight;
 		out.push_back({{0, top, size.x, code.bodyHeight}, text::palette::surface2});
-		for (size_t i = 0; i < code.visibleLines && i < code.lines.size(); ++i) {
+		for (size_t i = 0; i < std::min(code.visibleLines, code.laidLines) && i < code.lines.size(); ++i) {
 			const auto& line = code.lines[i];
 			if (line.background.a)
 				out.push_back({{0, top + line.y, size.x, line.visibleHeight}, line.background});

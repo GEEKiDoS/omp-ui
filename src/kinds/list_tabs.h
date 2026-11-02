@@ -18,6 +18,8 @@ struct TabText {
 	bool active = false;
 };
 struct ListTabsCache {
+	// App pages' rows (omp's /git file tree): compact, as many rows as fit.
+	bool dense = false;
 	ListText label, detail, value, icon, empty;
 	std::vector<ListText> hints;
 	std::vector<TabText> tabs;

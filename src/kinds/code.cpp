@@ -391,6 +391,7 @@ void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, con
 	        engine);
 	const auto& preview = node.prop("preview");
 	cache.preview = !diff && !preview.is_null() ? (preview.is_object() ? preview.value("lines", 12) : 12) : 0;
+	cache.split = diff && node.str("mode") == "split";
 	cache.fontSize = fonts.size();
 	cache.chromeless = chromeless;
 	cache.revision = node.rev;
@@ -398,12 +399,81 @@ void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, con
 	cache.dirty = true;
 }
 
+namespace {
+
+// Lays out a split diff: pairs each run of deletions with the insertions after it, row by row.
+SDL_FPoint measureSplit(CodeCache& cache, text::Engine& engine, const text::Fonts& fonts, float width) {
+	const float gap = fonts.size() * gfx::space::sm;
+	cache.half = std::max(0.0f, (width - cache.padX * 2 - gap * 2) * 0.5f);
+	cache.sideGutter = std::max(cache.oldColumn, cache.newColumn) + cache.signColumn + gap * 2;
+	const float side = std::max(0.0f, cache.half - cache.sideGutter), full = std::max(0.0f, width - cache.padX * 2);
+	auto& rows = cache.rows;
+	rows.clear();
+	const auto& lines = cache.lines;
+	for (size_t i = 0; i < lines.size(); ++i) {
+		const auto kind = lines[i].kind;
+		if (kind == LineKind::Hunk || kind == LineKind::Meta)
+			rows.push_back({i, i, 0, 0, true});
+		else if (kind == LineKind::Delete || kind == LineKind::Insert) {
+			size_t deletes = i;
+			while (deletes < lines.size() && lines[deletes].kind == LineKind::Delete)
+				++deletes;
+			size_t inserts = deletes;
+			while (inserts < lines.size() && lines[inserts].kind == LineKind::Insert)
+				++inserts;
+			const size_t count = std::max(deletes - i, inserts - deletes);
+			for (size_t k = 0; k < count; ++k)
+				rows.push_back({i + k < deletes ? i + k : std::string::npos,
+				                deletes + k < inserts ? deletes + k : std::string::npos});
+			i = inserts - 1;
+		} else
+			rows.push_back({i, i});
+	}
+	float y = cache.padY, intrinsic = 0;
+	for (auto& row : rows) {
+		row.height = 0;
+		for (const size_t index : {row.left, row.right}) {
+			if (index == std::string::npos)
+				continue;
+			auto& line = cache.lines[index];
+			const float available = row.full ? full : side;
+			if (line.layoutWidth != available) {
+				line.layout = engine.layout(line.runs, {.width = available, .wrap = text::Wrap::Char});
+				line.layoutWidth = available;
+				line.previewLines = 0;
+			}
+			row.height = std::max(row.height, line.layout.height);
+			intrinsic = std::max(intrinsic, line.layout.width + (row.full ? 0 : cache.sideGutter));
+		}
+		row.y = y;
+		for (const size_t index : {row.left, row.right})
+			if (index != std::string::npos) {
+				cache.lines[index].y = y;
+				cache.lines[index].visibleHeight = row.height;
+			}
+		y += row.height;
+	}
+	cache.visibleLines = cache.laidLines = cache.lines.size();
+	cache.contentHeight = y - cache.padY;
+	cache.hiddenLines = 0;
+	replace(cache.more, {}, mono(text::palette::accent), engine);
+	cache.bodyHeight = cache.padY * 2 + cache.contentHeight;
+	cache.moreHeight = 0;
+	cache.height = cache.headerHeight + cache.bodyHeight;
+	cache.measuredWidth = width >= naturalWidth ? intrinsic * 2 + gap * 2 + cache.padX * 2 : width;
+	cache.dirty = false;
+	return {cache.measuredWidth, cache.height};
+}
+
+} // namespace
+
 SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, const text::Fonts& fonts,
                        float width, bool expanded) {
 	syncCode(node, cache, engine, fonts, cache.chromeless);
 	width = std::max(0.0f, width);
-	if (!cache.dirty && cache.width == width && cache.expanded == expanded)
+	if (!cache.dirty && cache.width == width && cache.expanded == expanded && cache.budget == cache.laidBudget)
 		return {cache.measuredWidth, cache.height};
+	cache.laidBudget = cache.budget;
 	cache.width = width;
 	cache.expanded = expanded;
 	cache.padX = fonts.size() * gfx::space::lg;
@@ -424,24 +494,56 @@ SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& en
 		cache.headerLayout = singleLine(engine, cache.header, std::max(0.0f, width - cache.padX * 2));
 		cache.headerHeight = cache.headerLayout.height + gap;
 	}
+	if (cache.split)
+		return measureSplit(cache, engine, fonts, width);
 	const bool clamp = !cache.diff && !expanded && cache.preview > 0;
 	size_t remaining = clamp ? static_cast<size_t>(cache.preview) : std::numeric_limits<size_t>::max();
 	size_t total = 0, visible = 0;
 	cache.visibleLines = 0;
+	cache.laidLines = 0;
 	cache.contentHeight = 0;
 	float intrinsicWidth = cache.header.empty() ? 0 : cache.headerLayout.width + cache.padX * 2;
+	float rowHeight = fonts.lineHeight();
 	for (auto& line : cache.lines) {
 		const bool fullWidth = line.kind == LineKind::Hunk || line.kind == LineKind::Meta;
 		const float available = std::max(0.0f, width - cache.padX * 2 - (fullWidth ? 0 : cache.gutter));
+		line.y = cache.padY + cache.contentHeight;
+		// Past what a collapsed preview can show (or what a clamp hides): no layout, just a
+		// height from the line's length in mono cells, so long blocks re-wrap cheaply.
+		const bool estimate = remaining == 0 || (cache.budget > 0 && cache.contentHeight > cache.budget);
+		if (estimate) {
+			size_t cells = 0;
+			for (size_t at = line.begin; at < line.end; ++at)
+				cells += (static_cast<unsigned char>(cache.source[at]) & 0xC0) != 0x80;
+			const float advance = std::max(1.0f, fonts.monoAdvance());
+			const float perRow = std::max(1.0f, std::floor(available / advance));
+			const size_t rows =
+			    cache.wrap ? std::max<size_t>(1, static_cast<size_t>(std::ceil(static_cast<float>(cells) / perRow)))
+			               : 1;
+			intrinsicWidth = std::max(intrinsicWidth, static_cast<float>(cells) * advance + cache.padX * 2
+			                                              + (fullWidth ? 0 : cache.gutter));
+			const size_t shown = std::min(rows, remaining);
+			line.visibleHeight = static_cast<float>(shown) * rowHeight;
+			if (shown > 0) {
+				++cache.visibleLines;
+				cache.contentHeight += line.visibleHeight;
+			}
+			remaining -= shown;
+			++total;
+			visible += shown == rows ? 1 : 0;
+			continue;
+		}
 		if (line.layoutWidth != available) {
 			line.layout = engine.layout(line.runs,
 			                            {.width = available, .wrap = cache.wrap ? text::Wrap::Char : text::Wrap::None});
 			line.layoutWidth = available;
 			line.previewLines = 0;
 		}
+		++cache.laidLines;
+		if (line.layout.lineHeight > 0)
+			rowHeight = line.layout.lineHeight;
 		intrinsicWidth = std::max(intrinsicWidth, line.layout.width + cache.padX * 2 + (fullWidth ? 0 : cache.gutter));
 		const size_t count = line.layout.lineWidths.size(), shown = std::min(count, remaining);
-		line.y = cache.padY + cache.contentHeight;
 		line.visibleHeight = static_cast<float>(shown) * line.layout.lineHeight;
 		if (shown > 0) {
 			++cache.visibleLines;
@@ -450,8 +552,9 @@ SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& en
 				previewLayout(line, shown);
 		}
 		remaining -= shown;
-		total += count;
-		visible += shown;
+		// "N more lines" counts source lines, partly shown ones included.
+		++total;
+		visible += shown == count ? 1 : 0;
 	}
 	const size_t hidden = total - visible;
 	if (cache.hiddenLines != hidden) {
@@ -486,7 +589,50 @@ bool paintCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, co
 	gfx::rounded(renderer, body, fonts.size() / 3, text::palette::surface2);
 	{
 		gfx::ScopedClip contentClip(renderer, {body.x, body.y + cache.padY, body.w, cache.contentHeight});
-		for (size_t i = 0; i < cache.visibleLines; ++i) {
+		if (cache.split) {
+			// Old on the left, new on the right; a side without a line is left blank and shaded.
+			const float left = body.x + cache.padX, right = left + cache.half + gap * 2;
+			const auto top = contentClip.visible.y - body.y, bottom = top + contentClip.visible.h;
+			auto row =
+			    std::lower_bound(cache.rows.begin(), cache.rows.end(), top,
+			                     [](const CodeCache::SplitRow& value, float y) { return value.y + value.height <= y; });
+			gfx::line(renderer, {left + cache.half + gap, contentClip.visible.y},
+			          {left + cache.half + gap, contentClip.visible.y + contentClip.visible.h}, text::palette::border,
+			          fonts.size() / 15);
+			for (; row != cache.rows.end() && row->y < bottom; ++row) {
+				const float y = body.y + row->y;
+				if (row->full) {
+					const auto& line = cache.lines[row->left];
+					if (line.background.a)
+						gfx::fill(renderer, {body.x, y, body.w, row->height}, line.background);
+					engine.draw(line.runs, line.layout, left, y);
+					continue;
+				}
+				for (const bool isNew : {false, true}) {
+					const size_t index = isNew ? row->right : row->left;
+					const float x = isNew ? right : left;
+					const SDL_FRect cell{x - cache.padX * (isNew ? 0.5f : 1.0f), y,
+					                     cache.half + cache.padX * (isNew ? 1.5f : 1.0f) - gap, row->height};
+					if (index == std::string::npos) {
+						gfx::fill(renderer, cell, text::withAlpha(text::palette::fg, 6));
+						continue;
+					}
+					const auto& line = cache.lines[index];
+					if (line.background.a)
+						gfx::fill(renderer, cell, line.background);
+					const bool has = isNew ? line.hasNew : line.hasOld;
+					const auto& number = isNew ? line.newNumber : line.oldNumber;
+					const auto& numberLayout = isNew ? line.newNumberLayout : line.oldNumberLayout;
+					const float column = std::max(cache.oldColumn, cache.newColumn);
+					if (has)
+						engine.draw(number, numberLayout, x + column - numberLayout.width, y);
+					if (!line.sign.empty() && line.kind != LineKind::Context && line.kind != LineKind::Code)
+						engine.draw(line.sign, line.signLayout, x + column + gap, y);
+					engine.draw(line.runs, line.layout, x + cache.sideGutter, y);
+				}
+			}
+		}
+		for (size_t i = 0; !cache.split && i < std::min(cache.visibleLines, cache.laidLines); ++i) {
 			const auto& line = cache.lines[i];
 			const float y = body.y + line.y;
 			if (!gfx::intersects({body.x, y, body.w, line.visibleHeight}, contentClip.visible))

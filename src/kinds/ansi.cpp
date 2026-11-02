@@ -382,25 +382,31 @@ SDL_FPoint measureAnsi(const tsp::Node& node, AnsiCache& cache, text::Engine& en
 	}
 	const float contentWidth = std::max(0.0f, available - cache.padX * 2);
 	const bool widthChanged = cache.contentWidth != contentWidth;
-	if (widthChanged)
-		cache.dirtyFrom = 0;
 	cache.contentWidth = contentWidth;
-	for (size_t i = cache.dirtyFrom; i < cache.lines.size(); ++i) {
-		auto& line = cache.lines[i];
-		layoutLine(line, engine, contentWidth, text::Wrap::Char, cache.lineHeight, cache.ascent);
-		line.top = i == 0 ? 0 : cache.lines[i - 1].top + cache.lines[i - 1].layout.height;
-	}
-	cache.dirtyFrom = cache.lines.size();
 	cache.lineCount = cache.lines.size();
 	if (cache.lineCount > 1 && cache.lines.back().runs.empty())
 		--cache.lineCount;
-	cache.contentHeight = cache.lineCount == 0
-	                        ? 0
-	                        : cache.lines[cache.lineCount - 1].top + cache.lines[cache.lineCount - 1].layout.height;
+	// A collapsed preview shows only the last lines: earlier ones get no layout (they are laid
+	// out once expanded), and tops count from the first shown line.
 	const size_t hidden =
 	    !expanded && cache.previewLines > 0 && cache.lineCount > static_cast<size_t>(cache.previewLines)
 	        ? cache.lineCount - static_cast<size_t>(cache.previewLines)
 	        : 0;
+	// Lines from `changed` on have new content; hidden ones just lose their stale layout.
+	const size_t changed = std::min(cache.dirtyFrom, cache.lines.size());
+	for (size_t i = changed; i < hidden; ++i)
+		cache.lines[i].layoutWidth = -1;
+	const size_t start = widthChanged || hidden != cache.hiddenLines ? hidden : std::max(hidden, changed);
+	for (size_t i = start; i < cache.lines.size(); ++i) {
+		auto& line = cache.lines[i];
+		if (i >= changed || line.layoutWidth != contentWidth)
+			layoutLine(line, engine, contentWidth, text::Wrap::Char, cache.lineHeight, cache.ascent);
+		line.top = i == hidden ? 0 : cache.lines[i - 1].top + cache.lines[i - 1].layout.height;
+	}
+	cache.dirtyFrom = cache.lines.size();
+	cache.contentHeight = cache.lineCount == 0
+	                        ? 0
+	                        : cache.lines[cache.lineCount - 1].top + cache.lines[cache.lineCount - 1].layout.height;
 	if (hidden > 0) {
 		const bool labelChanged = hidden != cache.hiddenLines || cache.earlier.empty();
 		if (labelChanged) {
@@ -416,7 +422,7 @@ SDL_FPoint measureAnsi(const tsp::Node& node, AnsiCache& cache, text::Engine& en
 		}
 	}
 	cache.hiddenLines = hidden;
-	const float hiddenHeight = hidden == 0 ? 0 : cache.lines[hidden].top;
+	const float hiddenHeight = 0;
 	cache.measuredWidth = available;
 	cache.measuredHeight = cache.contentHeight - hiddenHeight
 	                     + (hidden > 0 ? cache.lineHeight + fonts.size() * gfx::space::sm : 0) + cache.padY * 2;

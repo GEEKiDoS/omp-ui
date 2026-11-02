@@ -175,6 +175,7 @@ YGSize Tree::measure(YGNodeConstRef node, float width, YGMeasureMode widthMode, 
 	auto& view = *static_cast<NodeView*>(YGNodeGetContext(node));
 	auto& tree = view.tree;
 	++tree.measuredCount;
+	view.leaf.budget = tree.budgetFor(view.id);
 	auto size = kinds::measure(tree.doc_.at(view.id), view.leaf, tree.engine_.get(), tree.fonts_,
 	                           widthMode == YGMeasureModeUndefined ? 1000000.0f : std::max(1.0f, width));
 	if (widthMode == YGMeasureModeExactly)
@@ -281,6 +282,22 @@ bool Tree::descendant(tsp::NodeId node, tsp::NodeId ancestor) const {
 }
 bool Tree::collapsed(tsp::NodeId id) const {
 	return doc_.at(id).flag("collapsible") && at(id).collapsed.value_or(doc_.at(id).flag("collapsed"));
+}
+float Tree::budgetFor(tsp::NodeId id) const {
+	for (auto parent = doc_.at(id).parent; parent; parent = doc_.at(parent).parent)
+		if (at(parent).previewBudget > 0)
+			return at(parent).previewBudget;
+	return 0;
+}
+void Tree::remeasureLeaves(tsp::NodeId id) {
+	// The first sync of a node runs before its children's views exist; they measure fresh anyway.
+	for (const auto child : doc_.at(id).children) {
+		if (child >= nodes_.size() || !nodes_[child])
+			continue;
+		if (YGNodeHasMeasureFunc(at(child).yoga.get()))
+			YGNodeMarkDirty(at(child).yoga.get());
+		remeasureLeaves(child);
+	}
 }
 void Tree::display(tsp::NodeId id) {
 	bool hidden = doc_.at(id).flag("hidden") || at(id).priorityHidden;
@@ -524,6 +541,52 @@ void Tree::sync(tsp::NodeId id) {
 	} else if (role == "omp.job.tile.lead") {
 		// Under the title, past the status dot of the head row.
 		YGNodeStyleSetMargin(yoga, YGEdgeLeft, fonts_.width(text::FontId::Ui, "✓") + em * gfx::space::xs);
+	} else if (role == "omp.app.git" || role == "omp.app.git-narrow") {
+		// omp's /git page (a screen surface): diff pane beside a changes sidebar, both full height.
+		YGNodeStyleSetAlignItems(yoga, YGAlignStretch);
+	} else if (role == "omp.app.git.main") {
+		YGNodeStyleSetFlexGrow(yoga, 1);
+		YGNodeStyleSetFlexShrink(yoga, 1);
+		YGNodeStyleSetFlexBasis(yoga, 0);
+		YGNodeStyleSetMinWidth(yoga, 0);
+		YGNodeStyleSetMinHeight(yoga, 0);
+		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::sm);
+		YGNodeStyleSetPadding(yoga, YGEdgeAll, em * gfx::space::md);
+	} else if (role == "omp.app.git.side") {
+		// Beside the diff, a quarter-ish of the width; below it (narrow page), part of the height.
+		const bool below = node.parent && doc_.at(node.parent).str("role") == "omp.app.git-narrow";
+		YGNodeStyleSetFlexShrink(yoga, 0);
+		if (below)
+			YGNodeStyleSetHeightPercent(yoga, 45);
+		else {
+			YGNodeStyleSetWidthPercent(yoga, 28);
+			YGNodeStyleSetMinWidth(yoga, em * 18);
+			YGNodeStyleSetMaxWidth(yoga, em * 30);
+		}
+		YGNodeStyleSetMinHeight(yoga, 0);
+		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::md);
+		YGNodeStyleSetPadding(yoga, YGEdgeAll, em * gfx::space::md);
+		YGNodeStyleSetOverflow(yoga, YGOverflowHidden);
+	} else if (role == "omp.app.git.diff" || role == "omp.app.git.changes" || role == "omp.app.git.compare") {
+		// The parts that take the remaining height and scroll inside it.
+		YGNodeStyleSetFlexGrow(yoga, 1);
+		YGNodeStyleSetFlexShrink(yoga, 1);
+		YGNodeStyleSetFlexBasis(yoga, 0);
+		YGNodeStyleSetMinHeight(yoga, 0);
+		YGNodeStyleSetMinWidth(yoga, 0);
+		YGNodeStyleSetOverflow(yoga, YGOverflowScroll);
+	} else if (role == "omp.app.git.stat") {
+		YGNodeStyleSetFlexShrink(yoga, 0);
+	} else if (role == "omp.app.git.where") {
+		YGNodeStyleSetFlexShrink(yoga, 1);
+		YGNodeStyleSetMinWidth(yoga, 0);
+		YGNodeStyleSetOverflow(yoga, YGOverflowHidden);
+	} else if (role.starts_with("omp.app.git.dir-d") || role.starts_with("omp.app.git.file-d")) {
+		// The changes tree: each level indents (the role carries the depth).
+		const auto digits = role.substr(role.rfind("-d") + 2);
+		int depth = 0;
+		std::from_chars(digits.data(), digits.data() + digits.size(), depth);
+		YGNodeStyleSetMargin(yoga, YGEdgeLeft, em * 0.9f * static_cast<float>(depth));
 	} else if (role == "omp.tool.file") {
 		// A search result's file line: icon, path, match-count badge.
 		if (node.prop("align").is_null())
@@ -561,6 +624,20 @@ void Tree::sync(tsp::NodeId id) {
 	if (node.id == "layer" && node.parent == doc_.root()) {
 		YGNodeStyleSetPositionType(yoga, YGPositionTypeAbsolute);
 		YGNodeStyleSetWidthPercent(yoga, 100);
+	}
+	{
+		// Collapsed with a head-anchored preview: descendants need lay out only what fits in it
+		// (a generous bound over the shown lines); a change re-measures them.
+		const auto& preview = node.prop("preview");
+		float budget = 0;
+		if (collapsed(id) && hasPreview(node) && !(preview.is_object() && preview.contains("tail"))) {
+			const float lines = preview.is_object() ? static_cast<float>(preview.value("lines", 6)) : 6.0f;
+			budget = (lines + 2) * pitch * 1.5f;
+		}
+		if (budget != view.previewBudget) {
+			view.previewBudget = budget;
+			remeasureLeaves(id);
+		}
 	}
 	if (YGNodeHasMeasureFunc(yoga))
 		YGNodeMarkDirty(yoga);
@@ -770,6 +847,16 @@ void Tree::layout(float width, float viewportHeight) {
 				if ((node.kind == tsp::Kind::Picker || node.kind == tsp::Kind::Prefs) && node.parent
 				    && doc_.at(node.parent).id == "main")
 					YGNodeStyleSetHeight(view->yoga.get(), std::max(1.0f, viewportHeight));
+				// A screen surface is a page, not a transcript: main is the viewport's height
+				// and an app page (`omp.app.*`, e.g. /git) fills it, scrolling its own panes.
+				if (surface_.mode == "screen" && node.id == "main" && node.parent == doc_.root())
+					YGNodeStyleSetHeight(view->yoga.get(), std::max(1.0f, viewportHeight));
+				if (surface_.mode == "screen" && node.parent && doc_.at(node.parent).id == "main"
+				    && node.str("role").starts_with("omp.app")) {
+					YGNodeStyleSetFlexGrow(view->yoga.get(), 1);
+					YGNodeStyleSetFlexBasis(view->yoga.get(), 0);
+					YGNodeStyleSetMinHeight(view->yoga.get(), 0);
+				}
 			}
 	lastDirty = dirtyCount;
 	measuredCount = 0;
@@ -796,6 +883,7 @@ float Tree::height(std::string_view region) const {
 }
 void Tree::beginPaint(bool partial, bool more) {
 	targets_.freeze(partial);
+	partial_ = partial;
 	if (more)
 		return; // Another damage region of the same frame: keep what earlier regions recorded.
 	animated.clear();
@@ -805,6 +893,7 @@ void Tree::beginPaint(bool partial, bool more) {
 	nextWake = 0;
 	if (partial)
 		return;
+	scrollers_.clear();
 	targets_.clear();
 	if (const auto focus = doc_.focus())
 		at(*focus).caret.reset();
@@ -990,13 +1079,22 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		          text::palette::border, scale);
 	}
 	const bool clip = YGNodeStyleGetOverflow(yoga) != YGOverflowVisible && node.id != "main";
-	if (node.kind == tsp::Kind::List) {
+	// Lists and overflow:scroll boxes (an app page's panes) scroll their children; a measured
+	// leaf set to scroll (a diff pane) scrolls its own content.
+	const bool scrollBox =
+	    node.kind == tsp::Kind::List
+	    || (YGNodeStyleGetOverflow(yoga) == YGOverflowScroll && node.id != "main" && !YGNodeHasMeasureFunc(yoga));
+	const bool scrollLeaf = YGNodeStyleGetOverflow(yoga) == YGOverflowScroll && YGNodeHasMeasureFunc(yoga);
+	if (scrollBox) {
 		float bottom = 0;
 		for (auto child : node.children)
 			if (YGNodeStyleGetDisplay(at(child).yoga.get()) != YGDisplayNone)
 				bottom = std::max(bottom, YGNodeLayoutGetTop(at(child).yoga.get())
 				                              + YGNodeLayoutGetHeight(at(child).yoga.get()));
-		view.scrollMax = std::max(0.0f, bottom - rect.h);
+		view.scrollMax = std::max(0.0f, bottom + YGNodeLayoutGetPadding(yoga, YGEdgeBottom) - rect.h);
+		view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
+	}
+	if (node.kind == tsp::Kind::List) {
 		if (view.selected != node.str("selected")) {
 			view.selected = node.str("selected");
 			const auto selected = std::find_if(node.children.begin(), node.children.end(), [&](auto child) {
@@ -1014,14 +1112,25 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		}
 		view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
 	}
+	if ((scrollBox || scrollLeaf) && !partial_)
+		scrollers_.push_back({gfx::intersect(rect, clips.current()), id});
 	if (clip)
 		clips.push(rect);
 	if (YGNodeHasMeasureFunc(yoga) || node.kind == tsp::Kind::Tool || node.kind == tsp::Kind::Agent
 	    || (node.kind == tsp::Kind::List && view.listEmpty)) {
 		targets_.bind(id, gfx::intersect(rect, clips.current()));
 		view.leaf.collapsed = collapsed(id);
+		view.leaf.budget = budgetFor(id);
+		auto leafRect = rect;
+		if (scrollLeaf) {
+			view.leaf.budget = 0;
+			const float natural = kinds::measure(node, view.leaf, engine_.get(), fonts_, rect.w).y;
+			view.scrollMax = std::max(0.0f, natural - rect.h);
+			view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
+			leafRect = {rect.x, rect.y - view.scroll, rect.w, std::max(rect.h, natural)};
+		}
 		const auto result =
-		    kinds::paint(node, view.leaf, engine_.get(), fonts_, renderer, rect, doc_.focus() == id, targets_);
+		    kinds::paint(node, view.leaf, engine_.get(), fonts_, renderer, leafRect, doc_.focus() == id, targets_);
 		view.caret = result.caret;
 		animating |= result.animating;
 		// Timed leaves (spinners, progress sweeps, elapsed clocks) redraw on their wake-ups, so
@@ -1110,6 +1219,13 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		nextPick = std::next(position) != siblings.end() && doc_.at(*std::next(position)).str("mark") == "pick";
 	}
 	kinds::paintMark(node, renderer, rect, scale, previousPick, nextPick);
+	if ((scrollBox || scrollLeaf) && view.scrollMax > 0) {
+		const float content = rect.h + view.scrollMax, thumb = std::max(em * 1.5f, rect.h * rect.h / content);
+		gfx::rounded(
+		    renderer,
+		    {rect.x + rect.w - 4 * scale, rect.y + (rect.h - thumb) * view.scroll / view.scrollMax, 2 * scale, thumb},
+		    scale, text::palette::dim);
+	}
 	if (clip)
 		clips.pop();
 	view.paintDirty = false;
@@ -1408,7 +1524,23 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	float dockHeight = 0, maxScroll = 0;
 	auto layOut = [&](bool lane) {
 		area = std::max(1.0f, content.w - (lane ? em * (minimapEms + 1) : 0));
-		const float innerWidth = std::max(1.0f, area - 2 * pad);
+		float innerWidth = std::max(1.0f, area - 2 * pad);
+		// When the last re-wrap was slow, a new width waits until it has held for a moment (the
+		// window being dragged), painting the column at its laid-out width meanwhile.
+		constexpr Uint64 settle = 150;
+		const Uint64 now = SDL_GetTicks();
+		if (laidWidth_ > 0 && innerWidth != laidWidth_ && slowRelayout_) {
+			if (innerWidth != pendingWidth_) {
+				pendingWidth_ = innerWidth;
+				pendingSince_ = now;
+			}
+			if (now < pendingSince_ + settle) {
+				innerWidth = laidWidth_;
+				relayoutAt_ = pendingSince_ + settle;
+			}
+		}
+		const bool rewrap = innerWidth != laidWidth_;
+		const auto started = SDL_GetPerformanceCounter();
 		auto lay = [&](Tree& tree) {
 			tree.layout(innerWidth, viewport.h);
 			if (tree.laidOut) {
@@ -1421,6 +1553,12 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 			lay(tree.get());
 		if (active_)
 			lay(active_->get());
+		if (rewrap) {
+			laidWidth_ = innerWidth;
+			pendingWidth_ = -1;
+			relayoutAt_ = 0;
+			slowRelayout_ = (SDL_GetPerformanceCounter() - started) * 1000 > SDL_GetPerformanceFrequency() * 40;
+		}
 		dockHeight = active_ ? active_->get().height("dock") : 0;
 		const float dockSpace = dockHeight > 0 ? dockHeight + em * 2 : 0;
 		mainClip_ = {content.x, content.y, content.w, std::max(0.0f, content.h - dockSpace)};

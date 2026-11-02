@@ -129,7 +129,7 @@ struct Window {
 	// A timed leaf's frame is due: repainted partially when its area is known.
 	bool due = false;
 	void wake(view::Views::Wake what) {
-		dirty |= what == view::Views::Wake::Hover;
+		dirty |= what == view::Views::Wake::Full;
 		due |= what == view::Views::Wake::Animation;
 	}
 	std::unique_ptr<text::Engine> engine;
