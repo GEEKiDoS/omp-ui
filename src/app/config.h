@@ -17,8 +17,8 @@ struct Theme {
 	std::filesystem::path image;
 	float imageOpacity = 0.15f;
 	Fit fit = Fit::Cover;
-	// OLED care: seconds without keyboard or mouse input in a window before the parts around
-	// the transcript (sidebar, title bar, prompt) fade out as a vignette; input restores them. 0: off.
+	// OLED care: seconds without keyboard or mouse input in a window before everything but the
+	// transcript column (sidebar, title bar, margins, minimap, prompt) fades as a vignette. 0: off.
 	double dimAfter = 300;
 
 	// The window needs a transparent framebuffer (translucent canvas or sidebar).

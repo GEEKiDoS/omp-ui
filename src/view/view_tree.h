@@ -37,7 +37,6 @@ struct NodeView {
 	SDL_FRect rect{}, hitRect{};
 	std::optional<SDL_FRect> caret;
 };
-
 // Decoded `image` blobs by content address; null while a blob is missing or undecodable.
 using ImageLookup = std::function<std::shared_ptr<const gfx::Image>(std::string_view blob)>;
 
@@ -119,6 +118,11 @@ private:
 	// The preview budget a leaf inherits from its nearest collapsed-preview ancestor (0: none).
 	float budgetFor(tsp::NodeId id) const;
 	void remeasureLeaves(tsp::NodeId id);
+	// The nearest collapsible ancestor (a tool card, thinking section), if any.
+	std::optional<tsp::NodeId> foldingAncestor(tsp::NodeId id) const;
+	// Whether a code/terminal block shows all its lines: while its card is open, else as the
+	// user expanded it ("N more lines" outside any card).
+	bool blockExpanded(tsp::NodeId id) const;
 	void toolLayout(tsp::NodeId id, float width);
 	void statusLayout(tsp::NodeId id, float width);
 	void listLayout(tsp::NodeId id, float width);
@@ -263,7 +267,9 @@ private:
 	float minimapScale_ = 0, minimapScroll_ = 0;
 	std::optional<std::pair<float, float>> minimapDrag_;
 	// Whether the last layout left the minimap its lane (only while the transcript scrolls).
-	bool minimapLane_ = false;
+	// Starts reserved: a long (resumed) transcript then lays out once at its final width, and
+	// only a short one, which is cheap to lay out, needs the second pass without the lane.
+	bool minimapLane_ = true;
 	// Re-wrapping a long transcript at a new width can take hundreds of milliseconds, so while
 	// the window is being resized the column keeps its laid-out width until the size settles.
 	float laidWidth_ = -1, pendingWidth_ = -1;

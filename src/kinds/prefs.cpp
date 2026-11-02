@@ -316,8 +316,6 @@ public:
 };
 
 void rebuild(const tsp::Node& node, PrefsCache& cache, text::Engine& engine, const text::Fonts& fonts, float width) {
-	for (const auto& item : cache.texts)
-		engine.forget(item.runs);
 	cache.texts.clear();
 	cache.shapes.clear();
 	cache.targets.clear();
@@ -612,11 +610,6 @@ double dragPrefsNumber(PrefsCache& cache, std::string_view item, const json& con
 	cache.dragValue = value;
 	cache.width = -1;
 	return value;
-}
-void forgetPrefs(PrefsCache& cache, text::Engine& engine) {
-	for (const auto& item : cache.texts)
-		engine.forget(item.runs);
-	cache = {};
 }
 
 } // namespace kinds

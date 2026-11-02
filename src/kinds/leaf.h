@@ -65,7 +65,6 @@ SDL_FPoint measure(const tsp::Node& node, LeafCache& cache, text::Engine& engine
                    float width);
 LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, const text::Fonts& fonts,
                 SDL_Renderer& renderer, const SDL_FRect& rect, bool focused, view::HitTargets& hits);
-void forget(LeafCache& cache, text::Engine& engine);
 
 // One mark of the transcript overview (the minimap): a text line segment in its colour or a
 // filled block (code background, picture), in leaf-local output pixels.

@@ -34,7 +34,6 @@ SDL_FPoint measureListTabs(const tsp::Node& node, ListTabsCache& cache, text::En
                            float width);
 bool paintListTabs(const tsp::Node& node, ListTabsCache& cache, text::Engine& engine, const text::Fonts& fonts,
                    SDL_Renderer& renderer, const SDL_FRect& rect, view::HitTargets& hits);
-void forgetListTabs(ListTabsCache& cache, text::Engine& engine);
 bool listItemMatches(const tsp::Node& node, std::string_view filter);
 
 } // namespace kinds

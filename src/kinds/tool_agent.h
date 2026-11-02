@@ -68,7 +68,6 @@ SDL_FPoint measureToolAgent(const tsp::Node& node, ToolAgentCache& cache, text::
                             const text::Fonts& fonts, float width);
 bool paintToolAgent(const tsp::Node& node, ToolAgentCache& cache, text::Engine& engine, const text::Fonts& fonts,
                     SDL_Renderer& renderer, const SDL_FRect& rect, bool collapsed, view::HitTargets& targets);
-void forgetToolAgent(ToolAgentCache& cache, text::Engine& engine);
 // Handles Phase hit items (the exact phase id) locally.
 // The caller dirties the measured Yoga leaf when this returns true.
 bool toggleChecklistPhase(ToolAgentCache& cache, std::string_view item);

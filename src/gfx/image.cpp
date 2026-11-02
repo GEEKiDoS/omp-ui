@@ -167,6 +167,27 @@ Pixels decodeRaster(std::string_view bytes) {
 	return result;
 }
 
+// A raster picture's natural size from its header, without decoding it; false when the format
+// isn't one we read.
+bool rasterSize(std::string_view bytes, int& width, int& height) {
+	if (bytes.size() > 12 && bytes.starts_with("RIFF") && bytes.substr(8, 4) == "WEBP") {
+		simplewebp* loaded = nullptr;
+		if (simplewebp_load_from_memory(const_cast<char*>(bytes.data()), bytes.size(), nullptr, &loaded)
+		    != SIMPLEWEBP_NO_ERROR)
+			return false;
+		const std::unique_ptr<simplewebp, WebpFree> webp(loaded);
+		size_t w = 0, h = 0;
+		simplewebp_get_dimensions(webp.get(), &w, &h);
+		width = static_cast<int>(w);
+		height = static_cast<int>(h);
+		return width > 0 && height > 0;
+	}
+	int channels = 0;
+	return stbi_info_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()), static_cast<int>(bytes.size()), &width,
+	                             &height, &channels)
+	    && width > 0 && height > 0;
+}
+
 // Area-average (box filter) shrink of premultiplied pixels, so downscaled screenshots keep
 // their text legible instead of aliasing as a GPU bilinear minification would.
 Pixels shrink(const Pixels& source, int width, int height) {
@@ -198,13 +219,13 @@ std::optional<Image> Image::decode(std::string_view bytes) {
 	const auto start = bytes.find_first_not_of(" \t\r\n");
 	if (start != std::string_view::npos && bytes[start] == '<')
 		return svg(bytes);
-	// Decoded once to validate and size it; the pixels are dropped until a texture needs them.
-	const auto pixels = decodeRaster(bytes);
-	if (pixels.argb.empty())
+	// Sized from the header; the pixels are decoded only when a texture needs them.
+	int width = 0, height = 0;
+	if (!rasterSize(bytes, width, height))
 		return std::nullopt;
 	Image image;
-	image.width_ = static_cast<float>(pixels.width);
-	image.height_ = static_cast<float>(pixels.height);
+	image.width_ = static_cast<float>(width);
+	image.height_ = static_cast<float>(height);
 	image.id_ = std::hash<std::string_view>{}(bytes);
 	image.encoded_ = bytes;
 	return image;

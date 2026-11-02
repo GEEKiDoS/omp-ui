@@ -34,10 +34,9 @@ void add(text::Runs& runs, std::string_view value, const text::RunStyle& style) 
 		runs.push_back({std::string(value), style});
 }
 
-void replace(text::Runs& runs, std::string_view value, const text::RunStyle& style, text::Engine& engine) {
+void replace(text::Runs& runs, std::string_view value, const text::RunStyle& style) {
 	if ((runs.empty() && value.empty()) || (runs.size() == 1 && runs.front().text == value))
 		return;
-	engine.forget(runs);
 	runs.clear();
 	add(runs, value, style);
 }
@@ -109,22 +108,51 @@ std::string hunkText(const json& hunks) {
 	return result;
 }
 
-void number(text::Runs& runs, text::Layout& layout, bool previousHas, int previousValue, bool has, int value,
-            text::Engine& engine) {
-	if (previousHas == has && previousValue == value)
-		return;
-	engine.forget(runs);
-	runs.clear();
-	if (has) {
-		auto style = mono(text::palette::dim);
-		style.chrome = true;
-		runs.push_back({std::to_string(value), style});
-	}
-	layout = {};
+// Draws a short mono label (a line number, a diff sign) with a line's metrics. Only visible lines
+// draw these, so they need no per-line runs or layouts; one scratch run is reused.
+void drawMono(text::Engine& engine, std::string_view value, SDL_Color color, bool chrome, float x, float y,
+              const text::Layout& like, float advance) {
+	static text::Runs runs(1);
+	static text::Layout layout;
+	auto& run = runs.front();
+	run.text.assign(value);
+	run.style = mono(color);
+	run.style.chrome = chrome;
+	const float width = advance * static_cast<float>(value.size());
+	layout.pieces.assign(1, text::Piece{0, 0, value.size(), 0, width, 0});
+	layout.lineWidths.assign(1, width);
+	layout.width = width;
+	layout.lineHeight = layout.height = like.lineHeight;
+	layout.ascent = like.ascent;
+	engine.draw(runs, layout, x, y);
+}
+
+// A line number right-aligned to end at `right`.
+void drawNumber(text::Engine& engine, int value, float right, float y, const text::Layout& like, float advance) {
+	char digits[16];
+	const auto end = std::to_chars(digits, digits + sizeof(digits), value).ptr;
+	const std::string_view text(digits, static_cast<size_t>(end - digits));
+	drawMono(engine, text, text::palette::dim, true, right - advance * static_cast<float>(text.size()), y, like,
+	         advance);
+}
+
+void drawSign(text::Engine& engine, LineKind kind, float x, float y, const text::Layout& like, float advance) {
+	if (kind == LineKind::Insert)
+		drawMono(engine, "+", text::palette::success, false, x, y, like, advance);
+	else if (kind == LineKind::Delete)
+		drawMono(engine, "-", text::palette::error, false, x, y, like, advance);
+}
+
+// Width of a right-aligned number column holding values up to `largest`.
+float numberColumn(int largest, float advance) {
+	int digits = 1;
+	for (int value = std::max(0, largest); value >= 10; value /= 10)
+		++digits;
+	return static_cast<float>(digits) * advance;
 }
 
 void syncLine(CodeCache::Line& line, std::string_view value, bool sameText, bool languageChanged,
-              const CodeCache& cache, size_t index, CodeCache::DiffState& state, text::Engine& engine) {
+              const CodeCache& cache, size_t index, CodeCache::DiffState& state) {
 	LineKind kind = LineKind::Code;
 	bool hasOld = false, hasNew = !cache.diff && cache.numbers;
 	int oldValue = 0, newValue = hasNew ? cache.start + static_cast<int>(index) : 0;
@@ -163,7 +191,6 @@ void syncLine(CodeCache::Line& line, std::string_view value, bool sameText, bool
 			kind = LineKind::Meta;
 	}
 	if (!sameText || languageChanged || line.kind != kind) {
-		engine.forget(line.runs);
 		line.runs.clear();
 		if (kind == LineKind::Hunk || kind == LineKind::Meta)
 			add(line.runs, content, mono(kind == LineKind::Hunk ? text::palette::info : text::palette::muted));
@@ -172,17 +199,9 @@ void syncLine(CodeCache::Line& line, std::string_view value, bool sameText, bool
 		// A real mono run also gives empty lines the mono face's line metrics.
 		if (line.runs.empty())
 			line.runs.push_back({{}, mono()});
+		line.runs.shrink_to_fit();
 		line.layoutWidth = -1;
-		line.previewLines = 0;
 	}
-	if (line.kind != kind) {
-		const std::string_view sign = kind == LineKind::Insert ? "+" : kind == LineKind::Delete ? "-" : "";
-		replace(line.sign, sign, mono(kind == LineKind::Insert ? text::palette::success : text::palette::error),
-		        engine);
-		line.signLayout = {};
-	}
-	number(line.oldNumber, line.oldNumberLayout, line.hasOld, line.oldValue, hasOld, oldValue, engine);
-	number(line.newNumber, line.newNumberLayout, line.hasNew, line.newValue, hasNew, newValue, engine);
 	line.kind = kind;
 	line.hasOld = hasOld;
 	line.hasNew = hasNew;
@@ -192,18 +211,11 @@ void syncLine(CodeCache::Line& line, std::string_view value, bool sameText, bool
 	line.after = state;
 }
 
-void forgetLine(CodeCache::Line& line, text::Engine& engine) {
-	engine.forget(line.runs);
-	engine.forget(line.oldNumber);
-	engine.forget(line.newNumber);
-	engine.forget(line.sign);
-}
-
-void previewLayout(CodeCache::Line& line, size_t count) {
-	if (count == line.previewLines)
-		return;
-	line.previewLines = count;
-	auto& target = line.previewLayout;
+// The first `count` rows of a line's layout, for the line a clamped preview cuts short.
+void previewLayout(CodeCache& cache, size_t index, size_t count) {
+	const auto& line = cache.lines[index];
+	cache.partialLine = index;
+	auto& target = cache.partial;
 	target.pieces.clear();
 	for (const auto& piece : line.layout.pieces) {
 		if (static_cast<size_t>(piece.line) >= count)
@@ -290,8 +302,7 @@ text::Runs highlightLine(std::string_view line, std::string_view language) {
 	return runs;
 }
 
-void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, const text::Fonts& fonts,
-              bool chromeless) {
+void syncCode(const tsp::Node& node, CodeCache& cache, const text::Fonts& fonts, bool chromeless) {
 	const bool diff = node.kind == tsp::Kind::Diff;
 	const bool fontChanged = cache.fontSize != fonts.size();
 	if (cache.synced && cache.revision == node.rev && cache.chromeless == chromeless && cache.diff == diff
@@ -336,7 +347,7 @@ void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, con
 			auto& line = cache.lines[index];
 			const bool sameText =
 			    existed && std::string_view(cache.source).substr(line.begin, line.end - line.begin) == value;
-			syncLine(line, value, sameText, languageChanged, cache, index, state, engine);
+			syncLine(line, value, sameText, languageChanged, cache, index, state);
 			line.begin = at;
 			line.end = contentEnd;
 			++index;
@@ -344,8 +355,6 @@ void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, con
 				break;
 			at = newline + 1;
 		}
-		for (size_t i = index; i < cache.lines.size(); ++i)
-			forgetLine(cache.lines[i], engine);
 		cache.lines.resize(index);
 		const auto lastNewline = source.find_last_of('\n');
 		cache.tailByte = lastNewline == std::string_view::npos ? 0 : lastNewline + 1;
@@ -360,23 +369,25 @@ void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, con
 		}
 	}
 
-	cache.oldColumn = cache.newColumn = 0;
+	int largestOld = 0, largestNew = 0;
+	bool anyOld = false, anyNew = false;
 	for (auto& line : cache.lines) {
-		if (fontChanged || wrapChanged) {
+		if (fontChanged || wrapChanged)
 			line.layoutWidth = -1;
-			line.previewLines = 0;
+		if (line.hasOld) {
+			anyOld = true;
+			largestOld = std::max(largestOld, line.oldValue);
 		}
-		if (line.hasOld && (fontChanged || line.oldNumberLayout.lineHeight == 0))
-			line.oldNumberLayout = singleLine(engine, line.oldNumber);
-		if (line.hasNew && (fontChanged || line.newNumberLayout.lineHeight == 0))
-			line.newNumberLayout = singleLine(engine, line.newNumber);
-		if (!line.sign.empty() && (fontChanged || line.signLayout.lineHeight == 0))
-			line.signLayout = singleLine(engine, line.sign);
-		cache.oldColumn = std::max(cache.oldColumn, line.oldNumberLayout.width);
-		cache.newColumn = std::max(cache.newColumn, line.newNumberLayout.width);
+		if (line.hasNew) {
+			anyNew = true;
+			largestNew = std::max(largestNew, line.newValue);
+		}
 		if (!diff)
 			line.background = {0, 0, 0, 0};
 	}
+	const float advance = fonts.monoAdvance();
+	cache.oldColumn = anyOld ? numberColumn(largestOld, advance) : 0;
+	cache.newColumn = anyNew ? numberColumn(largestNew, advance) : 0;
 	if (!diff && node.prop("marks").is_array()) {
 		for (const auto& mark : node.prop("marks")) {
 			const int index = mark.at("line").get<int>() - start;
@@ -387,8 +398,7 @@ void syncCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, con
 			cache.lines[static_cast<size_t>(index)].background = style.bg.a ? style.bg : translucent(style.color, 35);
 		}
 	}
-	replace(cache.header, !diff && !chromeless ? node.str("path") : std::string_view{}, mono(text::palette::muted),
-	        engine);
+	replace(cache.header, !diff && !chromeless ? node.str("path") : std::string_view{}, mono(text::palette::muted));
 	const auto& preview = node.prop("preview");
 	cache.preview = !diff && !preview.is_null() ? (preview.is_object() ? preview.value("lines", 12) : 12) : 0;
 	cache.split = diff && node.str("mode") == "split";
@@ -440,7 +450,6 @@ SDL_FPoint measureSplit(CodeCache& cache, text::Engine& engine, const text::Font
 			if (line.layoutWidth != available) {
 				line.layout = engine.layout(line.runs, {.width = available, .wrap = text::Wrap::Char});
 				line.layoutWidth = available;
-				line.previewLines = 0;
 			}
 			row.height = std::max(row.height, line.layout.height);
 			intrinsic = std::max(intrinsic, line.layout.width + (row.full ? 0 : cache.sideGutter));
@@ -456,7 +465,7 @@ SDL_FPoint measureSplit(CodeCache& cache, text::Engine& engine, const text::Font
 	cache.visibleLines = cache.laidLines = cache.lines.size();
 	cache.contentHeight = y - cache.padY;
 	cache.hiddenLines = 0;
-	replace(cache.more, {}, mono(text::palette::accent), engine);
+	replace(cache.more, {}, mono(text::palette::accent));
 	cache.bodyHeight = cache.padY * 2 + cache.contentHeight;
 	cache.moreHeight = 0;
 	cache.height = cache.headerHeight + cache.bodyHeight;
@@ -469,7 +478,7 @@ SDL_FPoint measureSplit(CodeCache& cache, text::Engine& engine, const text::Font
 
 SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, const text::Fonts& fonts,
                        float width, bool expanded) {
-	syncCode(node, cache, engine, fonts, cache.chromeless);
+	syncCode(node, cache, fonts, cache.chromeless);
 	width = std::max(0.0f, width);
 	if (!cache.dirty && cache.width == width && cache.expanded == expanded && cache.budget == cache.laidBudget)
 		return {cache.measuredWidth, cache.height};
@@ -501,6 +510,7 @@ SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& en
 	size_t total = 0, visible = 0;
 	cache.visibleLines = 0;
 	cache.laidLines = 0;
+	cache.partialLine = std::string::npos;
 	cache.contentHeight = 0;
 	float intrinsicWidth = cache.header.empty() ? 0 : cache.headerLayout.width + cache.padX * 2;
 	float rowHeight = fonts.lineHeight();
@@ -537,7 +547,6 @@ SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& en
 			line.layout = engine.layout(line.runs,
 			                            {.width = available, .wrap = cache.wrap ? text::Wrap::Char : text::Wrap::None});
 			line.layoutWidth = available;
-			line.previewLines = 0;
 		}
 		++cache.laidLines;
 		if (line.layout.lineHeight > 0)
@@ -549,7 +558,7 @@ SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& en
 			++cache.visibleLines;
 			cache.contentHeight += line.visibleHeight;
 			if (shown < count)
-				previewLayout(line, shown);
+				previewLayout(cache, static_cast<size_t>(&line - cache.lines.data()), shown);
 		}
 		remaining -= shown;
 		// "N more lines" counts source lines, partly shown ones included.
@@ -559,9 +568,9 @@ SDL_FPoint measureCode(const tsp::Node& node, CodeCache& cache, text::Engine& en
 	const size_t hidden = total - visible;
 	if (cache.hiddenLines != hidden) {
 		if (hidden > 0)
-			replace(cache.more, std::to_string(hidden) + " more lines", mono(text::palette::accent), engine);
+			replace(cache.more, std::to_string(hidden) + " more lines", mono(text::palette::accent));
 		else
-			replace(cache.more, {}, mono(text::palette::accent), engine);
+			replace(cache.more, {}, mono(text::palette::accent));
 		cache.hiddenLines = hidden;
 	}
 	cache.bodyHeight = cache.padY * 2 + cache.contentHeight;
@@ -621,13 +630,10 @@ bool paintCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, co
 					if (line.background.a)
 						gfx::fill(renderer, cell, line.background);
 					const bool has = isNew ? line.hasNew : line.hasOld;
-					const auto& number = isNew ? line.newNumber : line.oldNumber;
-					const auto& numberLayout = isNew ? line.newNumberLayout : line.oldNumberLayout;
-					const float column = std::max(cache.oldColumn, cache.newColumn);
+					const float column = std::max(cache.oldColumn, cache.newColumn), advance = fonts.monoAdvance();
 					if (has)
-						engine.draw(number, numberLayout, x + column - numberLayout.width, y);
-					if (!line.sign.empty() && line.kind != LineKind::Context && line.kind != LineKind::Code)
-						engine.draw(line.sign, line.signLayout, x + column + gap, y);
+						drawNumber(engine, isNew ? line.newValue : line.oldValue, x + column, y, line.layout, advance);
+					drawSign(engine, line.kind, x + column + gap, y, line.layout, advance);
 					engine.draw(line.runs, line.layout, x + cache.sideGutter, y);
 				}
 			}
@@ -639,20 +645,18 @@ bool paintCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, co
 				continue;
 			if (line.background.a)
 				gfx::fill(renderer, {body.x, y, body.w, line.visibleHeight}, line.background);
-			const float x = body.x + cache.padX;
+			const float x = body.x + cache.padX, advance = fonts.monoAdvance();
 			if (cache.diff) {
 				if (line.hasOld)
-					engine.draw(line.oldNumber, line.oldNumberLayout, x + cache.oldColumn - line.oldNumberLayout.width,
-					            y);
+					drawNumber(engine, line.oldValue, x + cache.oldColumn, y, line.layout, advance);
 				if (line.hasNew)
-					engine.draw(line.newNumber, line.newNumberLayout,
-					            x + cache.oldColumn + gap + cache.newColumn - line.newNumberLayout.width, y);
-				if (!line.sign.empty())
-					engine.draw(line.sign, line.signLayout, x + cache.oldColumn + cache.newColumn + gap * 2, y);
+					drawNumber(engine, line.newValue, x + cache.oldColumn + gap + cache.newColumn, y, line.layout,
+					           advance);
+				drawSign(engine, line.kind, x + cache.oldColumn + cache.newColumn + gap * 2, y, line.layout, advance);
 			} else if (line.hasNew)
-				engine.draw(line.newNumber, line.newNumberLayout, x + cache.newColumn - line.newNumberLayout.width, y);
+				drawNumber(engine, line.newValue, x + cache.newColumn, y, line.layout, advance);
 			const bool fullWidth = line.kind == LineKind::Hunk || line.kind == LineKind::Meta;
-			const auto& layout = line.visibleHeight < line.layout.height ? line.previewLayout : line.layout;
+			const auto& layout = i == cache.partialLine ? cache.partial : line.layout;
 			engine.draw(line.runs, layout, x + (fullWidth ? 0 : cache.gutter), y);
 		}
 	}
@@ -663,14 +667,6 @@ bool paintCode(const tsp::Node& node, CodeCache& cache, text::Engine& engine, co
 		            view::TargetKind::Expand);
 	}
 	return false;
-}
-
-void forgetCode(CodeCache& cache, text::Engine& engine) {
-	for (auto& line : cache.lines)
-		forgetLine(line, engine);
-	engine.forget(cache.header);
-	engine.forget(cache.more);
-	cache = {};
 }
 
 } // namespace kinds

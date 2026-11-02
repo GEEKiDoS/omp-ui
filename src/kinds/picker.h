@@ -67,7 +67,6 @@ struct PickerCache {
 };
 
 void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts);
-void forgetPicker(PickerCache& cache, text::Engine& engine);
 void layoutPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts,
                   float width, float height);
 bool paintPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts,

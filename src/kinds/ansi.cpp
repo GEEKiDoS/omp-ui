@@ -464,13 +464,6 @@ bool paintAnsi(const tsp::Node& node, AnsiCache& cache, text::Engine& engine, co
 	return false;
 }
 
-void forgetAnsi(AnsiCache& cache, text::Engine& engine) {
-	for (const auto& line : cache.lines)
-		engine.forget(line.runs);
-	engine.forget(cache.earlier);
-	cache = {};
-}
-
 void syncRows(const tsp::Node& node, RowsCache& cache, text::Engine&, const text::Fonts& fonts, bool) {
 	if (cache.fontSize != fonts.size()) {
 		const auto value = metrics(fonts);
@@ -545,12 +538,6 @@ bool paintRows(const tsp::Node& node, RowsCache& cache, text::Engine& engine, co
 		links(line, rect.x, top, clip.visible, hits);
 	}
 	return false;
-}
-
-void forgetRows(RowsCache& cache, text::Engine& engine) {
-	for (const auto& row : cache.rows)
-		engine.forget(row.line.runs);
-	cache = {};
 }
 
 } // namespace kinds

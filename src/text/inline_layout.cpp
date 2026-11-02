@@ -854,7 +854,9 @@ void Engine::clear() {
 }
 
 void Engine::drawImage(const gfx::Image& image, const SDL_FRect& rect, float opacity) {
-	constexpr size_t pictureBudget = 32 * 1024 * 1024;
+	// GPU drivers keep freed texture memory pooled, so the budget, not trimming, bounds what
+	// pictures cost: about two full-width screenshots; this frame's pictures are never evicted.
+	constexpr size_t pictureBudget = 8 * 1024 * 1024;
 	const int width = std::max(1, static_cast<int>(std::lround(rect.w))),
 	          height = std::max(1, static_cast<int>(std::lround(rect.h)));
 	// Raster pictures are never uploaded larger than they are drawn (or than their own size);
@@ -887,22 +889,33 @@ void Engine::drawImage(const gfx::Image& image, const SDL_FRect& rect, float opa
 		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 		pictures_.push_front({image.id(), pixels.width, pixels.height, std::move(texture)});
 		pictureBytes_ += pictures_.front().bytes();
-		while (pictureBytes_ > pictureBudget && pictures_.size() > 1) {
+		// Least recently drawn first; never one drawn in this frame (a screen showing more than
+		// the budget would otherwise decode its pictures again every frame).
+		const Uint64 frame = SDL_GetTicks() > 50 ? SDL_GetTicks() - 50 : 0;
+		while (pictureBytes_ > pictureBudget && pictures_.size() > 1 && pictures_.back().drawn < frame) {
 			pictureBytes_ -= pictures_.back().bytes();
 			pictures_.pop_back();
 		}
 		found = pictures_.begin();
 	} else if (found != pictures_.begin())
 		pictures_.splice(pictures_.begin(), pictures_, found);
+	found->drawn = SDL_GetTicks();
 	// Premultiplied pixels fade by scaling colour and alpha together.
 	SDL_SetTextureColorModFloat(found->texture.get(), opacity, opacity, opacity);
 	SDL_SetTextureAlphaModFloat(found->texture.get(), opacity);
 	SDL_RenderTexture(&renderer_, found->texture.get(), nullptr, &rect);
 }
 
-void Engine::forget(const Runs&) {
-	// Runs are values, not stable node identities; removal is infrequent.
-	clear();
+void Engine::trimPictures() {
+	// A few seconds' grace, so scrolling back and forth doesn't decode the same picture repeatedly.
+	constexpr Uint64 keep = 5000;
+	const Uint64 now = SDL_GetTicks();
+	for (auto it = pictures_.begin(); it != pictures_.end();)
+		if (now - it->drawn > keep) {
+			pictureBytes_ -= it->bytes();
+			it = pictures_.erase(it);
+		} else
+			++it;
 }
 
 } // namespace text

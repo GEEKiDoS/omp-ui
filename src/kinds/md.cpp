@@ -222,12 +222,6 @@ void applyMarks(text::Runs& runs, const json& marks) {
 	}
 	runs = std::move(result);
 }
-void forgetBlock(MdBlock& block, text::Engine& engine) {
-	engine.forget(block.runs);
-	engine.forget(block.markerRuns);
-	for (const auto& cell : block.cells)
-		engine.forget(cell.runs);
-}
 void compile(MdBlock& block, const text::RunStyle& base, const json& marks) {
 	auto style = base;
 	if (block.kind == MdBlock::Kind::Heading) {
@@ -396,7 +390,7 @@ text::Runs inlineMarkdown(std::string_view source, const text::RunStyle& base) {
 	return runs;
 }
 
-void syncMd(const tsp::Node& node, MdCache& cache, text::Engine& engine, const text::Fonts& fonts) {
+void syncMd(const tsp::Node& node, MdCache& cache, const text::Fonts& fonts) {
 	const auto source = node.str("text");
 	const bool sameStyle = cache.marks == node.prop("marks") && cache.tone == node.str("tone");
 	if (cache.fontSize != fonts.size()) {
@@ -416,8 +410,6 @@ void syncMd(const tsp::Node& node, MdCache& cache, text::Engine& engine, const t
 		first = cache.blocks.size() - 1;
 		from = cache.blocks.back().from;
 	}
-	for (size_t i = first; i < cache.blocks.size(); ++i)
-		forgetBlock(cache.blocks[i], engine);
 	cache.blocks.resize(first);
 	parseBlocks(source.substr(from), from, cache.blocks);
 	text::RunStyle base;
@@ -578,12 +570,6 @@ bool paintMd(MdCache& cache, text::Engine& engine, const text::Fonts& fonts, SDL
 		}
 	}
 	return animating;
-}
-
-void forgetMd(MdCache& cache, text::Engine& engine) {
-	for (auto& block : cache.blocks)
-		forgetBlock(block, engine);
-	cache = {};
 }
 
 } // namespace kinds

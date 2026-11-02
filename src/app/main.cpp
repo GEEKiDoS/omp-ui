@@ -1177,22 +1177,26 @@ int main(int argc, char* argv[]) {
 		window.sidebar.paintTooltip(*window.renderer, *window.engine, fonts, window.tabs,
 		                            static_cast<float>(window.outputW), static_cast<float>(window.outputH));
 		if (window.dimmedAt) {
-			// OLED care: an idle window darkens what stays put for hours (sidebar, title bar, the
-			// prompt dock) as a vignette around the transcript, which is left as it is. Fades in
+			// OLED care: an idle window darkens everything but the transcript column (sidebar,
+			// title bar, margins, minimap, the prompt dock) as a soft-edged vignette. Fades in
 			// over a second and a half; input brings everything back at once.
 			const float fade = std::min(1.0f, static_cast<float>(SDL_GetTicks() - window.dimmedAt) / 1500);
 			const SDL_FRect output{0, 0, static_cast<float>(window.outputW), static_cast<float>(window.outputH)};
-			float bottom = window.content.y + window.content.h;
+			const float em = fonts.size();
+			SDL_FRect transcript{window.content.x, window.content.y, window.content.w, window.content.h};
 			if (!window.tabs.empty()) {
 				auto& tab = *window.tabs[window.active];
 				for (const auto& surface : tab.host.session.surfaces())
-					if (surface->open && surface->mode != "screen")
+					if (surface->open && surface->mode != "screen") {
+						if (const auto main = tab.views.nodeRect(surface->id, "main"); main && main->w > 0) {
+							transcript.x = main->x - em * 0.5f;
+							transcript.w = main->w + em;
+						}
 						if (const auto dock = tab.views.nodeRect(surface->id, "dock"); dock && dock->h > 0)
-							bottom = std::min(bottom, dock->y);
+							transcript.h = std::max(0.0f, dock->y - em - transcript.y);
+					}
 			}
-			const SDL_FRect transcript{window.content.x, window.content.y, window.content.w,
-			                           std::max(0.0f, bottom - window.content.y)};
-			gfx::shadeAround(*window.renderer, output, transcript, fonts.size() * 2.5f,
+			gfx::shadeAround(*window.renderer, output, transcript, em * 1.5f,
 			                 static_cast<Uint8>(std::lround(fade * fade * 170)));
 			if (fade < 1) {
 				window.animating = true;

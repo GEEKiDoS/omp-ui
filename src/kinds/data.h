@@ -99,6 +99,6 @@ bool paintData(const tsp::Node& node, DataCache& cache, text::Engine& engine, co
                SDL_Renderer& renderer, const SDL_FRect& rect, view::HitTargets& targets);
 // Expand targets carry a cache-owned fold key. The caller dirties Yoga after a successful local toggle.
 bool foldData(DataCache& cache, std::string_view item);
-void forgetData(DataCache& cache, text::Engine& engine);
+void forgetData(DataCache& cache);
 
 } // namespace kinds

@@ -384,7 +384,7 @@ bool inlineKind(tsp::Kind kind) {
 }
 
 void syncInline(const tsp::Node& node, InlineCache& cache, text::Engine& engine, const text::Fonts& fonts) {
-	forgetInline(cache, engine);
+	cache = {};
 	const float unit = fonts.size() / 15;
 	cache.height = fonts.lineHeight();
 	cache.color = tone(node.str("tone"), text::palette::muted);
@@ -711,17 +711,6 @@ bool paintInline(const tsp::Node& node, InlineCache& cache, text::Engine& engine
 		wake(cache, (now / 33 + 1) * 33);
 	}
 	return cache.nextWake != 0;
-}
-
-void forgetInline(InlineCache& cache, text::Engine& engine) {
-	engine.forget(cache.text.runs);
-	engine.forget(cache.label.runs);
-	engine.forget(cache.total.runs);
-	for (const auto& glyph : cache.glyphs)
-		engine.forget(glyph.runs);
-	for (const auto& mark : cache.marks)
-		engine.forget(mark.glyph.runs);
-	cache = {};
 }
 
 } // namespace kinds

@@ -57,7 +57,9 @@ public:
 	void draw(const Runs& runs, const Layout& layout, float x, float y, float opacity = 1);
 	Hit hit(const Runs& runs, const Layout& layout, float x, float y);
 	void clear();
-	void forget(const Runs& runs);
+	// After a full paint: releases picture textures not drawn for a few seconds (scrolled away),
+	// so VRAM holds what is on screen rather than every screenshot up to the budget.
+	void trimPictures();
 	// While set, draw() highlights the covered text and appends it to selectedText().
 	void setSelection(std::optional<Selection> selection) {
 		selection_ = selection;
@@ -102,6 +104,7 @@ private:
 		size_t id;
 		int width, height;
 		std::unique_ptr<SDL_Texture, TextureDeleter> texture;
+		Uint64 drawn = 0;
 		size_t bytes() const { return static_cast<size_t>(width) * height * 4; }
 	};
 	std::list<Picture> pictures_; // Most recently drawn first.

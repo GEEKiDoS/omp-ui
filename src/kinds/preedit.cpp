@@ -18,7 +18,6 @@ size_t characterByte(std::string_view value, int characters) {
 void setPreedit(Preedit& state, text::Engine& engine, std::string_view value, int start, int length) {
 	if (state.text == value && state.start == start && state.length == length)
 		return;
-	engine.forget(state.runs);
 	state.text = value;
 	state.start = start;
 	state.length = length;

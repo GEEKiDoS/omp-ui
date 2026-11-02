@@ -197,13 +197,13 @@ void sync(const tsp::Node& node, LeafCache& cache, text::Engine& engine, const t
 	case tsp::Kind::Md:
 		if (!cache.md)
 			cache.md = std::make_unique<MdCache>();
-		syncMd(node, *cache.md, engine, fonts);
+		syncMd(node, *cache.md, fonts);
 		return;
 	case tsp::Kind::Code:
 	case tsp::Kind::Diff:
 		if (!cache.code)
 			cache.code = std::make_unique<CodeCache>();
-		syncCode(node, *cache.code, engine, fonts, chromeless);
+		syncCode(node, *cache.code, fonts, chromeless);
 		return;
 	case tsp::Kind::Ansi:
 		if (!cache.ansi)
@@ -223,7 +223,7 @@ void sync(const tsp::Node& node, LeafCache& cache, text::Engine& engine, const t
 	const bool expanded = cache.expanded;
 	const auto editorSelection = cache.editorSelection;
 	auto image = std::move(cache.image);
-	forget(cache, engine);
+	cache = {};
 	cache.preedit = std::move(preedit);
 	cache.expanded = expanded;
 	cache.editorSelection = editorSelection;
@@ -561,35 +561,6 @@ LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, c
 	return result;
 }
 
-void forget(LeafCache& cache, text::Engine& engine) {
-	if (cache.md)
-		forgetMd(*cache.md, engine);
-	if (cache.code)
-		forgetCode(*cache.code, engine);
-	if (cache.ansi)
-		forgetAnsi(*cache.ansi, engine);
-	if (cache.rows)
-		forgetRows(*cache.rows, engine);
-	if (cache.toolAgent)
-		forgetToolAgent(*cache.toolAgent, engine);
-	if (cache.data)
-		forgetData(*cache.data, engine);
-	if (cache.inlined)
-		forgetInline(*cache.inlined, engine);
-	if (cache.listTabs)
-		forgetListTabs(*cache.listTabs, engine);
-	if (cache.prefs)
-		forgetPrefs(*cache.prefs, engine);
-	if (cache.picker)
-		forgetPicker(*cache.picker, engine);
-	if (!cache.runs.empty())
-		engine.forget(cache.runs);
-	if (!cache.label.empty())
-		engine.forget(cache.label);
-	engine.forget(cache.preedit.runs);
-	cache = {};
-}
-
 namespace {
 
 // Text as line segments: neighbouring pieces of one colour on a line merge into one bar, and
@@ -652,7 +623,7 @@ void overview(const tsp::Node& node, const LeafCache& cache, const text::Fonts& 
 			if (line.background.a)
 				out.push_back({{0, top + line.y, size.x, line.visibleHeight}, line.background});
 			const bool fullWidth = line.kind == CodeCache::LineKind::Hunk || line.kind == CodeCache::LineKind::Meta;
-			const auto& layout = line.visibleHeight < line.layout.height ? line.previewLayout : line.layout;
+			const auto& layout = i == code.partialLine ? code.partial : line.layout;
 			textBars(line.runs, layout, code.padX + (fullWidth ? 0 : code.gutter), top + line.y,
 			         layoutLineHeight(layout, fonts), out);
 		}

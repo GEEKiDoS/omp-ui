@@ -59,6 +59,5 @@ SDL_FPoint measureInline(const tsp::Node& node, InlineCache& cache, text::Engine
 // Consume sizeChanged to dirty Yoga when a running elapsed label changes intrinsic width.
 bool paintInline(const tsp::Node& node, InlineCache& cache, text::Engine& engine, const text::Fonts& fonts,
                  SDL_Renderer& renderer, const SDL_FRect& rect, view::HitTargets& hits);
-void forgetInline(InlineCache& cache, text::Engine& engine);
 
 } // namespace kinds

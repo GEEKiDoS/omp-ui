@@ -49,6 +49,5 @@ std::optional<SDL_FRect> paintPrefs(const tsp::Node& node, PrefsCache& cache, te
 bool scrollPrefs(PrefsCache& cache, float x, float y, float delta);
 double dragPrefsNumber(PrefsCache& cache, std::string_view item, const json& control, const SDL_FRect& track,
                        float startX, float x, float scale);
-void forgetPrefs(PrefsCache& cache, text::Engine& engine);
 
 } // namespace kinds

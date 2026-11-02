@@ -154,9 +154,7 @@ Tree::~Tree() {
 		if (node) {
 			if (node->running && runningChanged_)
 				runningChanged_(-1);
-			kinds::forget(node->leaf, engine_.get());
-			engine_.get().forget(node->header);
-			engine_.get().forget(node->mark);
+			node->leaf = {};
 		}
 }
 void Tree::rebind(text::Engine& engine) {
@@ -175,6 +173,7 @@ YGSize Tree::measure(YGNodeConstRef node, float width, YGMeasureMode widthMode, 
 	auto& view = *static_cast<NodeView*>(YGNodeGetContext(node));
 	auto& tree = view.tree;
 	++tree.measuredCount;
+	view.leaf.expanded = tree.blockExpanded(view.id);
 	view.leaf.budget = tree.budgetFor(view.id);
 	auto size = kinds::measure(tree.doc_.at(view.id), view.leaf, tree.engine_.get(), tree.fonts_,
 	                           widthMode == YGMeasureModeUndefined ? 1000000.0f : std::max(1.0f, width));
@@ -237,9 +236,7 @@ void Tree::removing(tsp::NodeId id) {
 		if (runningChanged_)
 			runningChanged_(-1);
 	}
-	kinds::forget(view.leaf, engine_.get());
-	engine_.get().forget(view.header);
-	engine_.get().forget(view.mark);
+	view.leaf = {};
 	nodes_[id].reset();
 }
 void Tree::moved(tsp::NodeId id) {
@@ -283,7 +280,23 @@ bool Tree::descendant(tsp::NodeId node, tsp::NodeId ancestor) const {
 bool Tree::collapsed(tsp::NodeId id) const {
 	return doc_.at(id).flag("collapsible") && at(id).collapsed.value_or(doc_.at(id).flag("collapsed"));
 }
+std::optional<tsp::NodeId> Tree::foldingAncestor(tsp::NodeId id) const {
+	for (auto parent = doc_.at(id).parent; parent; parent = doc_.at(parent).parent)
+		if (doc_.at(parent).flag("collapsible"))
+			return parent;
+	return std::nullopt;
+}
+bool Tree::blockExpanded(tsp::NodeId id) const {
+	const auto& leaf = at(id).leaf;
+	if (!leaf.code && !leaf.ansi && !leaf.rows)
+		return leaf.expanded;
+	const auto card = foldingAncestor(id);
+	return card ? !collapsed(*card) : leaf.expanded;
+}
 float Tree::budgetFor(tsp::NodeId id) const {
+	// An expanded block shows every line, whatever the card around it.
+	if (at(id).leaf.expanded)
+		return 0;
 	for (auto parent = doc_.at(id).parent; parent; parent = doc_.at(parent).parent)
 		if (at(parent).previewBudget > 0)
 			return at(parent).previewBudget;
@@ -410,9 +423,7 @@ void Tree::sync(tsp::NodeId id) {
 	YGNodeStyleSetMargin(yoga, YGEdgeLeft, 0);
 	view.headerHeight = 0;
 	view.headerNode = 0;
-	engine_.get().forget(view.header);
 	view.header.clear();
-	engine_.get().forget(view.mark);
 	view.mark.clear();
 	view.headerWidth = -1;
 	if (node.kind == tsp::Kind::Tool || node.kind == tsp::Kind::Agent) {
@@ -792,7 +803,7 @@ void Tree::forgetLeaves() {
 		if (!view)
 			continue;
 		const bool expanded = view->leaf.expanded;
-		kinds::forget(view->leaf, engine_.get());
+		view->leaf = {};
 		view->leaf.expanded = expanded;
 	}
 }
@@ -1120,6 +1131,7 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 	    || (node.kind == tsp::Kind::List && view.listEmpty)) {
 		targets_.bind(id, gfx::intersect(rect, clips.current()));
 		view.leaf.collapsed = collapsed(id);
+		view.leaf.expanded = blockExpanded(id);
 		view.leaf.budget = budgetFor(id);
 		auto leafRect = rect;
 		if (scrollLeaf) {
@@ -1679,6 +1691,10 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	if (pointer_->card)
 		schedule(pointer_->card->nextWake);
 	clips.pop();
+	// A full paint has drawn every visible picture, so the rest were scrolled away (or belong to
+	// another tab sharing this window's engine).
+	if (!partial)
+		engine_.get().trimPictures();
 	return animating;
 }
 std::optional<std::vector<SDL_FRect>> Views::animatedRegions() const {

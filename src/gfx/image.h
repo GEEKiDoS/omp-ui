@@ -28,7 +28,8 @@ inline constexpr float pictureLines = 24;
 // render at each display size so they stay sharp.
 class Image {
 public:
-	// PNG, JPEG, GIF (first frame), BMP and WebP bytes, or SVG text; nullopt when undecodable.
+	// PNG, JPEG, GIF (first frame), BMP and WebP bytes, or SVG text; nullopt when the format or
+	// header isn't readable (raster data is only decoded for a texture, see pixels()).
 	static std::optional<Image> decode(std::string_view bytes);
 	static std::optional<Image> svg(std::string_view source);
 	Image(Image&&) noexcept;

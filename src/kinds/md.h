@@ -39,10 +39,9 @@ struct MdCache {
 };
 
 text::Runs inlineMarkdown(std::string_view source, const text::RunStyle& base = {});
-void syncMd(const tsp::Node& node, MdCache& cache, text::Engine& engine, const text::Fonts& fonts);
+void syncMd(const tsp::Node& node, MdCache& cache, const text::Fonts& fonts);
 SDL_FPoint measureMd(MdCache& cache, text::Engine& engine, const text::Fonts& fonts, float width);
 bool paintMd(MdCache& cache, text::Engine& engine, const text::Fonts& fonts, SDL_Renderer& renderer,
              const SDL_FRect& rect, view::HitTargets& hits);
-void forgetMd(MdCache& cache, text::Engine& engine);
 
 } // namespace kinds

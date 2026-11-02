@@ -13,10 +13,6 @@ namespace {
 
 constexpr float naturalLimit = 1000000;
 
-void forgetText(ListText& text, text::Engine& engine) {
-	engine.forget(text.runs);
-}
-
 void oneLine(ListText& text, text::Engine& engine, float width = naturalLimit) {
 	text.layout = engine.layout(text.runs, {.width = std::max(0.0f, width), .wrap = text::Wrap::None, .maxLines = 1});
 	if (width == naturalLimit)
@@ -37,18 +33,7 @@ bool listTabsKind(tsp::Kind kind) {
 	return kind == tsp::Kind::List || kind == tsp::Kind::Item || kind == tsp::Kind::Tabs;
 }
 
-void forgetListTabs(ListTabsCache& cache, text::Engine& engine) {
-	for (auto& text : {std::ref(cache.label), std::ref(cache.detail), std::ref(cache.value), std::ref(cache.icon),
-	                   std::ref(cache.empty)})
-		forgetText(text.get(), engine);
-	for (auto& hint : cache.hints)
-		forgetText(hint, engine);
-	for (auto& tab : cache.tabs)
-		forgetText(tab.label, engine);
-}
-
 void syncListTabs(const tsp::Node& node, ListTabsCache& cache, text::Engine& engine, const text::Fonts& fonts) {
-	forgetListTabs(cache, engine);
 	cache = {};
 	cache.dense = node.str("role").starts_with("omp.app.");
 	const auto foreground = node.flag("disabled") ? text::palette::dim : text::palette::fg;

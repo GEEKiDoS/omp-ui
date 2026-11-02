@@ -92,6 +92,12 @@ bool Tree::click(const HitTarget& target, std::string_view gesture, tsp::Session
 				YGNodeMarkDirty(view.yoga.get());
 			return true;
 		}
+		// Inside a folded card, "N more lines" opens the card (its arrow turns), which shows
+		// the block in full; elsewhere the block expands on its own.
+		if (const auto card = foldingAncestor(target.node); card && collapsed(*card)) {
+			toggleNode(*card, session);
+			return true;
+		}
 		view.leaf.expanded = !view.leaf.expanded;
 		view.leaf.width = -1;
 		if (YGNodeHasMeasureFunc(view.yoga.get()))
@@ -161,6 +167,9 @@ bool Tree::click(const HitTarget& target, std::string_view gesture, tsp::Session
 
 void Tree::toggleNode(tsp::NodeId id, tsp::Session& session) {
 	at(id).collapsed = !collapsed(id);
+	// Blocks inside show in full exactly while the card is open (see blockExpanded()); this also
+	// holds for blocks omp sends again in response to the toggle.
+	remeasureLeaves(id);
 	sync(id);
 	display(id);
 	const auto& node = doc_.at(id);
@@ -409,7 +418,6 @@ void Views::dismissHover() {
 	state.surface.clear();
 	state.card.reset();
 	state.cardSurface.doc.reset();
-	engine_.get().forget(state.title);
 	state.title.clear();
 	state.cardRect = {};
 	state.tip.clear();

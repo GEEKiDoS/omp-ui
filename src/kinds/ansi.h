@@ -55,13 +55,11 @@ SDL_FPoint measureAnsi(const tsp::Node& node, AnsiCache& cache, text::Engine& en
                        float width, bool expanded);
 bool paintAnsi(const tsp::Node& node, AnsiCache& cache, text::Engine& engine, const text::Fonts& fonts,
                SDL_Renderer& renderer, const SDL_FRect& rect, bool expanded, view::HitTargets& hits);
-void forgetAnsi(AnsiCache& cache, text::Engine& engine);
 
 void syncRows(const tsp::Node& node, RowsCache& cache, text::Engine& engine, const text::Fonts& fonts, bool chromeless);
 SDL_FPoint measureRows(const tsp::Node& node, RowsCache& cache, text::Engine& engine, const text::Fonts& fonts,
                        float width, bool expanded);
 bool paintRows(const tsp::Node& node, RowsCache& cache, text::Engine& engine, const text::Fonts& fonts,
                SDL_Renderer& renderer, const SDL_FRect& rect, bool expanded, view::HitTargets& hits);
-void forgetRows(RowsCache& cache, text::Engine& engine);
 
 } // namespace kinds

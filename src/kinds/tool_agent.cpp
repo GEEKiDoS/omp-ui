@@ -137,7 +137,6 @@ void place(Row& row, text::Engine& engine, float x, float y, float width, bool w
 }
 
 void replaceTimer(Row& row, std::string value, text::Engine& engine) {
-	engine.forget(row.runs);
 	row.runs.clear();
 	add(row.runs, value, style(text::palette::dim, text::FontId::Mono));
 	prepare(row, engine);
@@ -530,11 +529,6 @@ void layoutChecklist(ToolAgentCache& cache, text::Engine& engine, const text::Fo
 
 } // namespace
 
-void forgetToolAgent(ToolAgentCache& cache, text::Engine& engine) {
-	eachRow(cache, [&](Row& row) { engine.forget(row.runs); });
-	cache = {};
-}
-
 void eachShownRow(const ToolAgentCache& cache,
                   const std::function<void(const text::Runs&, const text::Layout&, const SDL_FRect&)>& visit) {
 	const auto row = [&](const Row& value) {
@@ -565,18 +559,9 @@ void syncToolAgent(const tsp::Node& node, ToolAgentCache& cache, text::Engine& e
 		return;
 	const bool hovered = cache.headHovered, chromeless = cache.chromeless;
 	std::vector<ToolAgentCache::Phase> previous;
-	if (node.kind == tsp::Kind::Checklist) {
+	if (node.kind == tsp::Kind::Checklist)
 		previous = std::move(cache.phases);
-		for (auto& phase : previous) {
-			engine.forget(phase.title.runs);
-			for (auto& item : phase.items) {
-				engine.forget(item.mark.runs);
-				engine.forget(item.label.runs);
-				engine.forget(item.note.runs);
-			}
-		}
-	}
-	forgetToolAgent(cache, engine);
+	cache = {};
 	cache.headHovered = hovered;
 	cache.chromeless = chromeless;
 	cache.running = node.str("status") == "running";

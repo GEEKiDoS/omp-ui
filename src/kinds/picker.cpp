@@ -36,8 +36,7 @@ SDL_Color tone(std::string_view value, SDL_Color fallback) {
 void append(text::Runs& runs, text::Runs extra) {
 	runs.insert(runs.end(), std::make_move_iterator(extra.begin()), std::make_move_iterator(extra.end()));
 }
-void set(PickerText& value, text::Runs runs, text::Engine& engine) {
-	engine.forget(value.runs);
+void set(PickerText& value, text::Runs runs) {
 	value.runs = std::move(runs);
 	value.width = -1;
 }
@@ -69,26 +68,6 @@ void avatar(text::Runs& runs, const json& mark) {
 			initials.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(name[i]))));
 	runs.push_back({initials + " ", {.font = text::FontId::Bold, .color = text::palette::accent}});
 }
-void forgetButtons(std::vector<PickerButton>& buttons, text::Engine& engine) {
-	for (auto& button : buttons) {
-		engine.forget(button.label.runs);
-		engine.forget(button.count.runs);
-		for (auto& key : button.keys)
-			engine.forget(key.runs);
-	}
-	buttons.clear();
-}
-void forgetRows(std::vector<PickerRow>& rows, text::Engine& engine) {
-	for (auto& row : rows) {
-		engine.forget(row.label.runs);
-		engine.forget(row.detail.runs);
-		for (auto& extra : row.extras)
-			engine.forget(extra.text.runs);
-		for (auto& fact : row.facts)
-			engine.forget(fact.text.runs);
-	}
-	rows.clear();
-}
 void buttonText(PickerButton& button, const json& value, text::Engine& engine, bool keys = false) {
 	button.id = string(value, "id");
 	button.disabled = disabled(value);
@@ -108,17 +87,16 @@ void buttonText(PickerButton& button, const json& value, text::Engine& engine, b
 			if (!key.is_string())
 				continue;
 			PickerText caption;
-			set(caption, runs(keyCap(key.get_ref<const std::string&>()), text::palette::dim, text::FontId::Mono),
-			    engine);
+			set(caption, runs(keyCap(key.get_ref<const std::string&>()), text::palette::dim, text::FontId::Mono));
 			line(caption, engine);
 			button.keys.push_back(std::move(caption));
 		}
 	if (field(value, "count").is_number()) {
 		set(button.count,
-		    runs(std::format("{:g}", value["count"].get<double>()), text::palette::dim, text::FontId::Mono), engine);
+		    runs(std::format("{:g}", value["count"].get<double>()), text::palette::dim, text::FontId::Mono));
 		line(button.count, engine);
 	}
-	set(button.label, std::move(label), engine);
+	set(button.label, std::move(label));
 	line(button.label, engine);
 }
 float buttonWidth(PickerButton& button, text::Engine& engine, float maximum, float em) {
@@ -221,8 +199,6 @@ std::string formatNumber(double value) {
 }
 void facts(const tsp::Node& node, PickerRow& row, const PickerCache& cache, text::Engine& engine,
            const text::Fonts& fonts, float width) {
-	for (auto& fact : row.facts)
-		engine.forget(fact.text.runs);
 	row.facts.clear();
 	const auto& item = node.prop("items")[row.item];
 	const auto& values = field(item, "facts");
@@ -326,21 +302,6 @@ void drawButton(PickerButton& button, text::Engine& engine, SDL_Renderer& render
 
 } // namespace
 
-void forgetPicker(PickerCache& cache, text::Engine& engine) {
-	for (auto value : {std::ref(cache.title), std::ref(cache.subtitle), std::ref(cache.count), std::ref(cache.query),
-	                   std::ref(cache.placeholder), std::ref(cache.message), std::ref(cache.stripLabel),
-	                   std::ref(cache.confirmText), std::ref(cache.confirmLabel), std::ref(cache.close)})
-		engine.forget(value.get().runs);
-	forgetButtons(cache.tabs, engine);
-	forgetButtons(cache.scopes, engine);
-	forgetButtons(cache.strip, engine);
-	forgetButtons(cache.actions, engine);
-	forgetRows(cache.rows, engine);
-	for (auto& column : cache.columns)
-		engine.forget(column.head.runs);
-	cache.columns.clear();
-}
-
 void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts) {
 	std::array<double, 8> stamps{};
 	size_t stampIndex = 0;
@@ -349,7 +310,7 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 		stamps[stampIndex++] = found == node.stamps.end() ? 0 : found->second;
 	}
 	if (!cache.ready || stamps != cache.catalogueStamps || cache.fontSize != fonts.size()) {
-		forgetRows(cache.rows, engine);
+		cache.rows.clear();
 		cache.catalogueStamps = stamps;
 		cache.fontSize = fonts.size();
 		cache.selected.clear();
@@ -399,8 +360,6 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 			row.y = cache.contentHeight;
 			cache.contentHeight += row.height;
 		}
-		for (auto& column : cache.columns)
-			engine.forget(column.head.runs);
 		cache.columns.clear();
 		if (node.prop("columns").is_array())
 			for (const auto& value : node.prop("columns")) {
@@ -437,17 +396,17 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 	text::Runs decorated;
 	icon(decorated, node.str("icon"), text::palette::accent);
 	append(decorated, std::move(heading));
-	set(cache.title, std::move(decorated), engine);
-	set(cache.subtitle, runs(node.prop("subtitle"), text::palette::muted), engine);
+	set(cache.title, std::move(decorated));
+	set(cache.subtitle, runs(node.prop("subtitle"), text::palette::muted));
 	std::string count = std::to_string(cache.shown);
 	if (node.prop("total").is_number())
 		count += " of " + std::to_string(static_cast<size_t>(node.num("total")));
 	count += " " + std::string(node.str("noun", "items"));
-	set(cache.count, runs(count, text::palette::dim), engine);
+	set(cache.count, runs(count, text::palette::dim));
 	cache.hasQuery = node.prop("query").is_string();
-	set(cache.query, runs(node.prop("query")), engine);
-	set(cache.placeholder, runs(node.str("placeholder", "Search"), text::palette::dim), engine);
-	set(cache.close, runs("×", text::palette::muted), engine);
+	set(cache.query, runs(node.prop("query")));
+	set(cache.placeholder, runs(node.str("placeholder", "Search"), text::palette::dim));
+	set(cache.close, runs("×", text::palette::muted));
 	const auto state = node.str("state", "ready");
 	const auto& message = state == "ready" ? node.prop("empty") : node.prop("message");
 	set(cache.message,
@@ -455,12 +414,11 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 	                                  : state == "error" ? "Unable to load items"
 	                                                     : "No " + std::string(node.str("noun", "items")))
 	                           : message,
-	         state == "error" ? text::palette::error : text::palette::muted),
-	    engine);
-	forgetButtons(cache.tabs, engine);
-	forgetButtons(cache.scopes, engine);
-	forgetButtons(cache.strip, engine);
-	forgetButtons(cache.actions, engine);
+	         state == "error" ? text::palette::error : text::palette::muted));
+	cache.tabs.clear();
+	cache.scopes.clear();
+	cache.strip.clear();
+	cache.actions.clear();
 	if (node.prop("tabs").is_array())
 		for (const auto& value : node.prop("tabs")) {
 			PickerButton button;
@@ -475,7 +433,7 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 			if (!group.empty() && group != previousGroup) {
 				PickerButton header;
 				header.disabled = true;
-				set(header.label, runs(group, text::palette::dim, text::FontId::Bold), engine);
+				set(header.label, runs(group, text::palette::dim, text::FontId::Bold));
 				line(header.label, engine);
 				cache.scopes.push_back(std::move(header));
 				previousGroup = group;
@@ -496,7 +454,7 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 			cache.scopes.push_back(std::move(button));
 		}
 	const auto& strip = node.prop("strip");
-	set(cache.stripLabel, runs(field(strip, "label"), text::palette::muted), engine);
+	set(cache.stripLabel, runs(field(strip, "label"), text::palette::muted));
 	if (field(strip, "items").is_array())
 		for (size_t i = 0; i < strip["items"].size(); ++i) {
 			const auto& value = strip["items"][i];
@@ -512,11 +470,10 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 			cache.strip.push_back(std::move(button));
 		}
 	cache.confirmAct = string(node.prop("confirm"), "act", "confirm");
-	set(cache.confirmText, runs(field(node.prop("confirm"), "text"), text::palette::warning), engine);
+	set(cache.confirmText, runs(field(node.prop("confirm"), "text"), text::palette::warning));
 	set(cache.confirmLabel,
 	    runs(field(node.prop("confirm"), "label").is_null() ? json("Confirm") : field(node.prop("confirm"), "label"),
-	         text::palette::warning),
-	    engine);
+	         text::palette::warning));
 	if (node.prop("actions").is_array())
 		for (const auto& value : node.prop("actions")) {
 			PickerButton button;

@@ -661,7 +661,7 @@ void syncData(const tsp::Node& node, DataCache& cache, text::Engine& engine, con
 	for (auto& row : cache.folds)
 		if (row.changed)
 			folded.emplace(std::move(row.key), row.expanded);
-	forgetData(cache, engine);
+	forgetData(cache);
 	cache = DataCache{};
 	cache.kind = node.kind;
 	cache.revision = node.rev;
@@ -792,9 +792,7 @@ bool foldData(DataCache& cache, std::string_view item) {
 	return false;
 }
 
-void forgetData(DataCache& cache, text::Engine& engine) {
-	if (!cache.texts.empty())
-		engine.forget(cache.texts.front().runs);
+void forgetData(DataCache& cache) {
 	for (auto& value : cache.texts)
 		value.layout = {};
 	cache.visibleTexts.clear();
