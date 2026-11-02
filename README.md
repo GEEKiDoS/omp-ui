@@ -40,6 +40,10 @@ On first launch, `omp-ui` creates a config directory at `%APPDATA%\omp\omp-ui` (
 
 You can edit the theme JSON files to customize colors, window opacity, blur/acrylic backdrops, and background images, or set `OMP_UI_THEME=<name>` to switch themes via environment variable.
 
+For OLED screens, an idle window dims everything except the transcript after 5 minutes; set `"dimAfter"` (seconds, `0` to disable) in `config.json` to change that.
+
+Short UI transitions are on by default; set `"animations": false` in `config.json` to switch them off.
+
 ## Building
 
 Requires CMake (3.24+), Ninja, Git, and a C++20 compiler (Visual Studio on Windows). SDL3, SDL_ttf, Yoga, and lunasvg are fetched automatically by CMake.

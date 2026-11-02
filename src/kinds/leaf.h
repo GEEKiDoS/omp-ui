@@ -55,6 +55,7 @@ struct LeafCache {
 struct LeafPaint {
 	std::optional<SDL_FRect> caret;
 	bool animating = false;
+	bool transitioning = false;
 	Uint64 nextWake = 0;
 	bool sizeChanged = false;
 };

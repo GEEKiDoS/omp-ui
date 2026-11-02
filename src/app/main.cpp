@@ -122,6 +122,8 @@ struct Window {
 	std::unique_ptr<SDL_Texture, TextureDeleter> frame;
 	std::optional<std::vector<SDL_FRect>> damage;
 	Uint64 lastPaint = 0;
+	// Retained until the exact final paint, even if a tween expires between event-loop wakes.
+	bool transitioning = false, sidebarTransition = false;
 	bool tooltipPending = false;
 	// OLED care: the last keyboard/mouse input, and when the idle fade began (0: not dimmed).
 	Uint64 lastInput = SDL_GetTicks();
@@ -140,6 +142,8 @@ struct Window {
 	int outputW = 1, outputH = 1, windowW = 1, windowH = 1;
 	float toOutputX = 1, toOutputY = 1;
 	SDL_FRect content{0, 0, 1, 1}, restart{}, openWorkspace{};
+	float metricWidth = 1; // Protocol width commits only after the sidebar stops moving.
+	float sidebarWidth = 0;
 	bool inspector = false, dirty = true, animating = false, choosingFolder = false;
 	// Created with a translucent framebuffer (fixed for the window's lifetime), and a note shown
 	// in the caption when a reloaded theme needs what this window lacks.
@@ -200,12 +204,17 @@ struct TabDrag {
 
 int main(int argc, char* argv[]) {
 	std::string drivePath, workspace;
+	std::filesystem::path configFile;
 	for (int i = 1; i < argc && std::string_view(argv[i]) != "--"; ++i) {
 		if (std::string_view(argv[i]) == "--drive") {
 			showErrors = false;
 			if (++i == argc || !*argv[i])
 				return fail("--drive requires a script path");
 			drivePath = argv[i];
+		} else if (std::string_view(argv[i]) == "--config") {
+			if (++i == argc || !*argv[i])
+				return fail("--config requires a file path");
+			configFile = text::utf8Path(argv[i]);
 		} else if (workspace.empty())
 			workspace = argv[i];
 	}
@@ -221,7 +230,7 @@ int main(int argc, char* argv[]) {
 	SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
 		return fail(SDL_GetError());
-	auto theme = app::applyTheme(drivePath.empty()); // Hidden test runs never create the user's config.
+	auto theme = app::applyTheme(drivePath.empty(), configFile); // Hidden runs never create the user's config.
 	// The theme's background picture, decoded once and drawn in every window.
 	std::optional<gfx::Image> wallpaper;
 	const auto loadWallpaper = [&] {
@@ -280,8 +289,10 @@ int main(int argc, char* argv[]) {
 			window->sidebarPress.reset();
 	};
 	auto tabMetrics = [&](Window& window, app::Tab& tab) {
+		if (tab.visible && !tab.host.session.surfaces().empty() && tab.views.transitioning())
+			return;
 		// A protocol aside docks independently per tab, after the application sidebar.
-		const float width = tab.views.contentWidth(window.content.w);
+		const float width = tab.views.contentWidth(window.metricWidth);
 		const int cols = std::max(1, static_cast<int>(std::floor(width / monoAdvance)));
 		const int rows = std::max(1, static_cast<int>(std::floor(window.content.h / lineHeight)));
 		if (cols != tab.host.session.cols || rows != tab.host.rows)
@@ -289,23 +300,51 @@ int main(int argc, char* argv[]) {
 		tab.host.rows = rows;
 		tab.host.session.resize(cols, monoAdvance, lineHeight);
 	};
-	auto resize = [&](Window& window) {
-		SDL_GetWindowSize(window.window.get(), &window.windowW, &window.windowH);
-		SDL_GetRenderOutputSize(window.renderer.get(), &window.outputW, &window.outputH);
-		window.toOutputX = static_cast<float>(window.outputW) / std::max(1, window.windowW);
-		window.toOutputY = static_cast<float>(window.outputH) / std::max(1, window.windowH);
-		const float left =
-		    std::min(window.sidebar.width(fonts), std::max(0.0f, static_cast<float>(window.outputW) - 1));
+	auto layoutWindow = [&](Window& window, Uint64 now) {
+		window.sidebarWidth = window.sidebar.width(fonts, now);
+		const float left = std::min(window.sidebarWidth, std::max(0.0f, static_cast<float>(window.outputW) - 1));
 		// omp-ui draws the caption: a strip as tall as the sidebar header above the content.
 		const float caption = std::min(window.sidebar.headerHeight(fonts), static_cast<float>(window.outputH) - 1);
 		const float width = std::max(1.0f, window.outputW - left);
 		window.titleBar.layout({left, 0, width, caption}, window.toOutputX, window.toOutputY);
 		window.content = {left, caption, width, std::max(1.0f, window.outputH - caption)};
+	};
+	auto resize = [&](Window& window) {
+		SDL_GetWindowSize(window.window.get(), &window.windowW, &window.windowH);
+		SDL_GetRenderOutputSize(window.renderer.get(), &window.outputW, &window.outputH);
+		window.toOutputX = static_cast<float>(window.outputW) / std::max(1, window.windowW);
+		window.toOutputY = static_cast<float>(window.outputH) / std::max(1, window.windowH);
+		layoutWindow(window, SDL_GetTicks());
+		if (!window.sidebarTransition)
+			window.metricWidth = window.content.w;
 		for (auto& tab : window.tabs)
 			tabMetrics(window, *tab);
 		if (!window.tabs.empty())
 			window.sidebar.reveal(window.active, fonts, static_cast<float>(window.outputH), window.tabs.size());
 		window.dirty = true;
+	};
+	auto toggleSidebar = [&](Window& window) {
+		cancelDrag();
+		window.menu.reset();
+		window.sidebarPress.reset();
+		window.sidebar.toggle();
+		window.sidebarTransition = true;
+		if (!window.tabs.empty())
+			window.sidebar.reveal(window.active, fonts, static_cast<float>(window.outputH), window.tabs.size());
+		window.dirty = true;
+	};
+	auto viewTransition = [](const Window& window) {
+		if (window.tabs.empty())
+			return false;
+		const auto& tab = *window.tabs[window.active];
+		return tab.views.transitioning();
+	};
+	auto fastTransition = [&](const Window& window) {
+		return window.transitioning || window.sidebarTransition || window.sidebar.transitioning()
+		    || viewTransition(window);
+	};
+	auto paintInterval = [&](const Window& window) -> Uint64 {
+		return fastTransition(window) ? 16 : window.animating ? 33 : 0;
 	};
 	auto setScale = [&](float value) {
 		if (value == scale)
@@ -742,8 +781,7 @@ int main(int argc, char* argv[]) {
 				selectTab(window, (window.active + window.tabs.size() - 1) % window.tabs.size());
 				break;
 			case ActionKind::Toggle:
-				window.sidebar.collapsed = !window.sidebar.collapsed;
-				resize(window);
+				toggleSidebar(window);
 				break;
 			case ActionKind::Inspector:
 				window.inspector = !window.inspector;
@@ -786,7 +824,7 @@ int main(int argc, char* argv[]) {
 			int x = 0, y = 0;
 			SDL_GetWindowPosition(destination.window.get(), &x, &y);
 			const float localX = (point.x - x) * destination.toOutputX, localY = (point.y - y) * destination.toOutputY;
-			if (localX >= destination.content.x)
+			if (localX >= destination.content.x || destination.sidebarTransition)
 				return;
 			const float row = destination.sidebar.rowHeight(fonts), header = destination.sidebar.headerHeight(fonts);
 			const auto insertion = static_cast<size_t>(
@@ -804,7 +842,7 @@ int main(int argc, char* argv[]) {
 	// window's framebuffer alpha is fixed when it is created (SDL's swap chain has already shown
 	// opaque frames), so a window created opaque says in its caption to restart.
 	auto reloadConfig = [&] {
-		theme = app::applyTheme(drivePath.empty());
+		theme = app::applyTheme(drivePath.empty(), configFile);
 		loadWallpaper();
 		for (auto& window : windows) {
 			app::styleWindow(*window->window, theme, window->translucent);
@@ -922,16 +960,18 @@ int main(int argc, char* argv[]) {
 			return true;
 		}
 		if (event.type == SDL_EVENT_MOUSE_MOTION)
-			window.dirty |= window.sidebar.motion(x, y, fonts, static_cast<float>(window.outputH), window.tabs.size());
+			window.dirty |= window.sidebar.motion(x, y, fonts, static_cast<float>(window.outputH), window.tabs.size(),
+			                                      window.sidebarWidth, window.sidebarTransition);
 		if (x < window.content.x) {
 			if (event.type == SDL_EVENT_MOUSE_MOTION && !window.tabs.empty())
 				window.dirty |= window.tabs[window.active]->views.handle(event, outputX, outputY);
 			else if (event.type == SDL_EVENT_MOUSE_WHEEL)
-				window.dirty |=
-				    window.sidebar.wheel(event.wheel.y, fonts, static_cast<float>(window.outputH), window.tabs.size());
+				window.dirty |= window.sidebar.wheel(event.wheel.y, fonts, static_cast<float>(window.outputH),
+				                                     window.tabs.size(), window.sidebarTransition);
 			else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-				window.sidebarPress = window.sidebar.hit(x, y, event.button.button, fonts,
-				                                         static_cast<float>(window.outputH), window.tabs.size());
+				window.sidebarPress =
+				    window.sidebar.hit(x, y, event.button.button, fonts, static_cast<float>(window.outputH),
+				                       window.tabs.size(), window.sidebarWidth, window.sidebarTransition);
 				if (window.sidebarPress->action == app::SidebarAction::Select
 				    && event.button.button == SDL_BUTTON_LEFT) {
 					drag = TabDrag{window.id(), window.sidebarPress->index, global, global};
@@ -940,8 +980,9 @@ int main(int argc, char* argv[]) {
 				}
 			} else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && window.sidebarPress) {
 				const auto press = std::exchange(window.sidebarPress, std::nullopt);
-				const auto hit = window.sidebar.hit(x, y, event.button.button, fonts,
-				                                    static_cast<float>(window.outputH), window.tabs.size());
+				const auto hit =
+				    window.sidebar.hit(x, y, event.button.button, fonts, static_cast<float>(window.outputH),
+				                       window.tabs.size(), window.sidebarWidth, window.sidebarTransition);
 				if (hit.action != press->action || hit.index != press->index)
 					return true;
 				switch (hit.action) {
@@ -987,8 +1028,7 @@ int main(int argc, char* argv[]) {
 					break;
 				}
 				case app::SidebarAction::Toggle:
-					window.sidebar.collapsed = !window.sidebar.collapsed;
-					resize(window);
+					toggleSidebar(window);
 					break;
 				default:
 					break;
@@ -1170,12 +1210,13 @@ int main(int argc, char* argv[]) {
 		}
 		const bool sidebarAnimating =
 		    window.sidebar.paint(*window.renderer, *window.engine, fonts, window.tabs, window.active,
-		                         static_cast<float>(window.outputH), window.translucent);
+		                         static_cast<float>(window.outputH), window.sidebarWidth, window.translucent);
 		window.animating |= sidebarAnimating;
 		if (animated && sidebarAnimating)
 			animated->push_back({0, 0, window.sidebar.width(fonts), static_cast<float>(window.outputH)});
 		window.sidebar.paintTooltip(*window.renderer, *window.engine, fonts, window.tabs,
-		                            static_cast<float>(window.outputW), static_cast<float>(window.outputH));
+		                            static_cast<float>(window.outputW), static_cast<float>(window.outputH),
+		                            window.sidebarTransition);
 		if (window.dimmedAt) {
 			// OLED care: an idle window darkens everything but the transcript column (sidebar,
 			// title bar, margins, minimap, the prompt dock) as a soft-edged vignette. Fades in
@@ -1240,7 +1281,8 @@ int main(int argc, char* argv[]) {
 			SDL_GetWindowPosition(window.window.get(), &x, &y);
 			const float localX = (drag->point.x - x) * window.toOutputX,
 			            localY = (drag->point.y - y) * window.toOutputY;
-			if (localX >= 0 && localX < window.content.x && localY >= 0 && localY < window.outputH) {
+			if (!window.sidebarTransition && localX >= 0 && localX < window.content.x && localY >= 0
+			    && localY < window.outputH) {
 				const float row = window.sidebar.rowHeight(fonts), header = window.sidebar.headerHeight(fonts);
 				const float index = std::clamp(std::floor((localY - header + window.sidebar.scroll) / row + 0.5f), 0.0f,
 				                               static_cast<float>(window.tabs.size()));
@@ -1256,9 +1298,32 @@ int main(int argc, char* argv[]) {
 	// whole transcript 30 times a second. Without animations frames draw straight to the screen
 	// (no extra full-window copy) and the texture is released, so idle windows hold no frame VRAM.
 	auto paint = [&](Window& window) {
+		const auto now = SDL_GetTicks();
+		const bool sidebarMoving = window.sidebar.transitioning(now);
+		const bool sidebarFrame = window.sidebarTransition || sidebarMoving;
+		const bool fastFrame = fastTransition(window);
+		if (sidebarFrame) {
+			layoutWindow(window, now);
+			window.sidebarTransition = sidebarMoving;
+			if (!sidebarMoving) {
+				window.metricWidth = window.content.w;
+				for (auto& tab : window.tabs)
+					tabMetrics(window, *tab);
+			}
+		}
+		const float finalViewportWidth = std::max(1.0f, window.outputW - window.sidebar.targetWidth(fonts));
+		if (sidebarFrame && !sidebarMoving) {
+			for (auto& tab : window.tabs) {
+				tab->views.setWidthTransition(true, finalViewportWidth);
+				tab->views.setWidthTransition(false, finalViewportWidth);
+			}
+		} else if (!window.tabs.empty()) {
+			auto& views = window.tabs[window.active]->views;
+			views.setWidthTransition(sidebarMoving, finalViewportWidth);
+		}
 		auto& renderer = *window.renderer;
 		// Animating, or timed leaves (spinners, clocks) whose areas the last paint recorded.
-		if (!window.animating && !(window.damage && !window.damage->empty())) {
+		if (fastFrame || (!window.animating && !(window.damage && !window.damage->empty()))) {
 			window.frame.reset();
 			window.damage.reset();
 		} else {
@@ -1274,7 +1339,7 @@ int main(int argc, char* argv[]) {
 				window.damage.reset(); // A new texture holds no previous frame.
 			}
 		}
-		const bool partial = window.frame && !window.dirty && window.damage && !window.damage->empty();
+		const bool partial = !fastFrame && window.frame && !window.dirty && window.damage && !window.damage->empty();
 		if (window.frame)
 			SDL_SetRenderTarget(&renderer, window.frame.get());
 		if (partial) {
@@ -1300,6 +1365,7 @@ int main(int argc, char* argv[]) {
 		// Animating without a known area: repaint fully next time.
 		if (window.animating && window.damage && window.damage->empty())
 			window.damage.reset();
+		window.transitioning = sidebarMoving || viewTransition(window);
 		if (window.frame) {
 			SDL_SetRenderTarget(&renderer, nullptr);
 			SDL_RenderTexture(&renderer, window.frame.get(), nullptr, nullptr);
@@ -1324,6 +1390,7 @@ int main(int argc, char* argv[]) {
 		if (!window.tabs.empty()) {
 			auto& tab = *window.tabs[window.active];
 			const auto presentedLog = tab.logGeneration;
+			tabMetrics(window, tab);
 			tab.host.session.flushAcks();
 			window.dirty = window.inspector && tab.logGeneration != presentedLog;
 		}
@@ -1560,9 +1627,10 @@ int main(int argc, char* argv[]) {
 			delay = earlier(delay, window->sidebar.wakeDelay());
 			if (window->dirty || window->due)
 				delay = 0;
-			else if (window->animating) // Animation frames at ~30 fps.
-				delay = earlier(delay, static_cast<int>(std::max<Sint64>(0, static_cast<Sint64>(window->lastPaint + 33)
-				                                                                - SDL_GetTicks())));
+			else if (const auto interval = paintInterval(*window))
+				delay = earlier(delay,
+				                static_cast<int>(std::max<Sint64>(0, static_cast<Sint64>(window->lastPaint + interval)
+				                                                         - static_cast<Sint64>(SDL_GetTicks()))));
 		}
 		if (drive)
 			delay = earlier(delay, drive->wakeDelay());
@@ -1681,7 +1749,8 @@ int main(int argc, char* argv[]) {
 			if (!window->tabs.empty()) {
 				window->wake(window->tabs[window->active]->views.tick());
 			}
-			if (window->dirty || window->due || (window->animating && SDL_GetTicks() >= window->lastPaint + 33))
+			const auto interval = paintInterval(*window);
+			if (window->dirty || window->due || (interval && SDL_GetTicks() >= window->lastPaint + interval))
 				paint(*window);
 		}
 	}

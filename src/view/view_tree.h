@@ -2,6 +2,7 @@
 
 #include "core/tsp.h"
 #include "gfx/draw.h"
+#include "gfx/tween.h"
 #include "kinds/leaf.h"
 #include <yoga/Yoga.h>
 #include <functional>
@@ -28,6 +29,12 @@ struct NodeView {
 	std::optional<bool> collapsed;
 	float scroll = 0;
 	float scrollMax = 0;
+	gfx::Tween scrollTween, reveal;
+	Uint64 revealPaint = 0;
+	float revealValue = 1;
+	void snapScroll(float value);
+	void sampleScroll(Uint64 now);
+	void wheelScroll(float delta, Uint64 now);
 	// Collapsed with a preview: the most of its content it can show (pixels, 0: no limit).
 	float previewBudget = 0;
 	std::string selected;
@@ -55,16 +62,22 @@ public:
 	void forgetLeaves();
 	void layout(float width, float viewportHeight = 0);
 	float height(std::string_view region) const;
-	float asideWidth(float viewportWidth) const;
+	// The width of a docked aside (omp's settings sheet) at `preferred` (pixels at scale 1, as the
+	// user dragged it), clamped so the transcript keeps room; the whole width when narrow.
+	float asideWidth(float viewportWidth, float preferred) const;
+	float presentedAsideWidth(float layoutWidth) const;
+	// Set its stable endpoint width before transcript layout, then reserve the revealed part.
+	bool prepareAside(float layoutWidth, bool immediate);
 	bool paint(std::string_view region, float x, float y, SDL_Renderer& renderer, gfx::ClipStack& clips);
 	// `partial`: a damage-only redraw (nothing moved), which keeps the last full paint's hit
 	// targets and caret; `more`: a further damage region of the same frame, which also keeps
 	// the animation areas and wake-up time gathered so far.
-	void beginPaint(bool partial = false, bool more = false);
+	void beginPaint(bool partial = false, bool more = false, bool transitions = true);
 	// Rects (output pixels, clipped) of leaves that reported animation in the last paint.
 	std::vector<SDL_FRect> animated;
 	// A leaf changed size during the last paint, so the layout moved: the next paint must be full.
 	bool relayout = false;
+	bool transitioning = false;
 	std::optional<SDL_FRect> focusedCaret() const;
 	std::optional<std::reference_wrapper<const HitTarget>> hit(float x, float y) const { return targets_.hit(x, y); }
 	// Whether a press here means a gesture (button, toggle, link, node action, overlay) rather than transcript text.
@@ -78,7 +91,8 @@ public:
 	size_t editorOffset(tsp::NodeId id, float x, float y);
 	void setEditorSelection(tsp::NodeId id, std::optional<std::pair<size_t, size_t>> selection);
 	void sendEdit(tsp::NodeId id, size_t from, size_t to, std::string_view text, tsp::Session& session) const;
-	bool paintLayer(const SDL_FRect& viewport, float dockY, SDL_Renderer& renderer, gfx::ClipStack& clips);
+	bool paintLayer(const SDL_FRect& viewport, float dockY, float asideLayoutWidth, SDL_Renderer& renderer,
+	                gfx::ClipStack& clips);
 	void setPreedit(std::string_view text, int start, int length);
 	bool scrollAt(float x, float y, float delta);
 	bool hoverTool(float x, float y);
@@ -127,6 +141,7 @@ private:
 	void statusLayout(tsp::NodeId id, float width);
 	void listLayout(tsp::NodeId id, float width);
 	bool paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer& renderer, gfx::ClipStack& clips);
+	float reveal(NodeView& view, Uint64 duration = 140);
 	void toggleNode(tsp::NodeId id, tsp::Session& session);
 	tsp::Surface& surface_;
 	tsp::Document& doc_;
@@ -141,6 +156,8 @@ private:
 	// first: the wheel scrolls the innermost one under the pointer.
 	std::vector<std::pair<SDL_FRect, tsp::NodeId>> scrollers_;
 	bool partial_ = false;
+	bool transitionsReady_ = false;
+	Uint64 paintSerial_ = 0;
 	float width_ = -1, viewportHeight_ = 0;
 	struct Overview {
 		uint64_t signature = 0;
@@ -168,6 +185,9 @@ public:
 	// PartialMore: another damage region of the same frame (wake-ups from earlier regions kept).
 	enum class Paint { Full, Partial, PartialMore };
 	bool paint(const SDL_FRect& viewport, Paint mode = Paint::Full);
+	bool transitioning() const { return transitioning_ || widthTransition_; }
+	// Fit a narrowing column before the sidebar slides; defer widening until its final frame.
+	void setWidthTransition(bool active, float finalViewportWidth);
 	// Where the last paint's animations are (output pixels), so the next frame can repaint just
 	// those; nullopt when an animation's area is unknown (hover fades) and a full paint is needed.
 	std::optional<std::vector<SDL_FRect>> animatedRegions() const;
@@ -251,6 +271,8 @@ private:
 	float mainScroll_ = 0;
 	std::vector<MenuEntry> menu_;
 	SDL_FRect menuRect_{};
+	SDL_FRect menuPaintRect_{}, menuClip_{};
+	gfx::Tween menuReveal_;
 	std::optional<size_t> menuPress_;
 	// The editor holding a terminal-side selection, and an in-progress press/drag in an editor.
 	std::optional<EditorRef> editorSelection_;
@@ -272,11 +294,20 @@ private:
 	bool minimapLane_ = true;
 	// Re-wrapping a long transcript at a new width can take hundreds of milliseconds, so while
 	// the window is being resized the column keeps its laid-out width until the size settles.
-	float laidWidth_ = -1, pendingWidth_ = -1;
+	float laidWidth_ = -1, pendingWidth_ = -1, widthTransitionViewport_ = -1;
 	Uint64 pendingSince_ = 0, relayoutAt_ = 0;
 	bool slowRelayout_ = false;
+	bool widthTransition_ = false, asideTransition_ = false, asideVisible_ = false, forceWidthLayout_ = false;
+	bool transitioning_ = false, paintedOnce_ = false;
 	std::vector<SDL_Vertex> minimapVertices_;
 	std::vector<int> minimapIndices_;
+	// The settings aside's left edge, draggable to resize it: the grab strip (empty without a
+	// resizable aside), a drag in progress (pointer x and width at the press) and the chosen width
+	// in pixels at scale 1, shared by every tab for the rest of the run.
+	SDL_FRect asideGrip_{};
+	float asideLayoutWidth_ = 0;
+	std::optional<std::pair<float, float>> asideDrag_;
+	static inline float asidePreferred_ = 400;
 	void paintMinimap(float scroll, float maxScroll, float pad, float mainWidth);
 	void scrollMainTo(float value);
 };

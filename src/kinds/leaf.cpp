@@ -419,12 +419,15 @@ LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, c
 	}
 	if (listTabsKind(node.kind))
 		return {.animating = paintListTabs(node, *cache.listTabs, engine, fonts, renderer, rect, hits)};
-	if (node.kind == tsp::Kind::Prefs)
-		return {.caret = paintPrefs(node, *cache.prefs, engine, fonts, renderer, rect, focused, hits)};
+	if (node.kind == tsp::Kind::Prefs) {
+		const auto caret = paintPrefs(node, *cache.prefs, engine, fonts, renderer, rect, focused, hits);
+		return {.caret = caret, .transitioning = cache.prefs->transitioning};
+	}
 	if (node.kind == tsp::Kind::Picker) {
 		const bool animating = paintPicker(node, *cache.picker, engine, fonts, renderer, rect, focused, hits);
 		return {.caret = cache.picker->caret,
 		        .animating = animating,
+		        .transitioning = cache.picker->transitioning,
 		        .nextWake =
 		            cache.picker->nextWake >= 0 ? SDL_GetTicks() + static_cast<Uint64>(cache.picker->nextWake) : 0};
 	}

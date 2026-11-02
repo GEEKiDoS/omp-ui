@@ -121,6 +121,20 @@ bool Tree::click(const HitTarget& target, std::string_view gesture, tsp::Session
 		return true;
 	}
 	if (target.kind == TargetKind::Activate && primary) {
+		if (const auto& node = doc_.at(target.node); node.kind == tsp::Kind::Prefs) {
+			// Choice pills act as comboboxes: a pill closes its own open menu, and switches from
+			// another row's (omp ignores `activate` while another row is open, so that row is
+			// closed first by selecting this one).
+			const auto& editing = node.prop("editing");
+			const auto open = editing.is_object() ? editing.value("row", "") : std::string{};
+			if (open == target.item) {
+				session.sendEvent(
+				    {{"ev", "action"}, {"sf", surface_.id}, {"id", node.id}, {"act", "close"}, {"value", open}});
+				return true;
+			}
+			if (!open.empty())
+				send(target.node, "select", target.item);
+		}
 		send(target.node, "activate", target.item);
 		return true;
 	}
@@ -258,8 +272,8 @@ void Tree::sendEdit(tsp::NodeId id, size_t from, size_t to, std::string_view ins
 
 bool Tree::scrollAt(float x, float y, float delta) {
 	const auto scrollBy = [&](NodeView& view) {
-		view.scroll = std::clamp(view.scroll + delta, 0.0f, view.scrollMax);
-		view.stick = view.scroll >= view.scrollMax - 2;
+		view.wheelScroll(delta, SDL_GetTicks());
+		transitioning |= view.scroll != view.scrollTween.target();
 	};
 	const auto target = hit(x, y);
 	if (!target) {
@@ -277,18 +291,19 @@ bool Tree::scrollAt(float x, float y, float delta) {
 			return true;
 		if (view.leaf.prefs && kinds::scrollPrefs(*view.leaf.prefs, x, y, delta))
 			return true;
-		if (view.scrollMax <= 0)
+		if (view.scrollMax <= 0 || (doc_.at(current).id == "main" && doc_.at(current).parent == doc_.root()))
 			continue;
 		scrollBy(view);
 		return true;
 	}
 	for (const auto& entry : targets_.entries())
-		if (entry.kind == TargetKind::Block)
+		if (entry.kind == TargetKind::Block && contains(entry.rect, x, y))
 			return true;
 	return false;
 }
 
-bool Tree::paintLayer(const SDL_FRect& viewport, float dockY, SDL_Renderer& renderer, gfx::ClipStack& clips) {
+bool Tree::paintLayer(const SDL_FRect& viewport, float dockY, float asideLayoutWidth, SDL_Renderer& renderer,
+                      gfx::ClipStack& clips) {
 	const auto layer = doc_.find("layer");
 	if (!layer)
 		return false;
@@ -316,7 +331,7 @@ bool Tree::paintLayer(const SDL_FRect& viewport, float dockY, SDL_Renderer& rend
 		const bool full = size == "full" || size == "screen";
 		const float fraction = size == "sm" ? 0.42f : size == "lg" ? 0.82f : 0.62f;
 		const float maxWidth = std::max(1.0f, viewport.w - em * gfx::space::lg * 2);
-		float width = prefs ? asideWidth(viewport.w)
+		float width = prefs ? asideLayoutWidth
 		            : full  ? viewport.w
 		                    : std::min(maxWidth, std::max(em * 26, viewport.w * fraction));
 		const auto& anchor = node.prop("anchor");
@@ -333,7 +348,8 @@ bool Tree::paintLayer(const SDL_FRect& viewport, float dockY, SDL_Renderer& rend
 			kinds::layoutPicker(node, *view.leaf.picker, engine_.get(), fonts_, width, naturalHeight);
 		} else if (prefs)
 			YGNodeStyleSetHeight(yoga, maxHeight);
-		YGNodeCalculateLayout(yoga, width, YGUndefined, YGDirectionLTR);
+		if (laidOut || view.paintDirty || YGNodeIsDirty(yoga) || YGNodeLayoutGetWidth(yoga) != width)
+			YGNodeCalculateLayout(yoga, width, YGUndefined, YGDirectionLTR);
 		const float naturalHeight = YGNodeLayoutGetHeight(yoga);
 		const float height = std::min(maxHeight, naturalHeight);
 		float x = prefs ? viewport.x + viewport.w - width : viewport.x + (viewport.w - width) * 0.5f;
@@ -362,9 +378,24 @@ bool Tree::paintLayer(const SDL_FRect& viewport, float dockY, SDL_Renderer& rend
 		}
 		x = clampPosition(x, viewport.x, viewport.w, width);
 		y = clampPosition(y, viewport.y, viewport.h, height);
+		const SDL_FRect finalBox{x, y, width, height};
+		const float progress = reveal(view, prefs ? 180 : 140);
+		if (prefs && progress == 0) {
+			// prepareAside reserved the first frame before a possibly expensive re-wrap.
+			// Start its clock now, so that layout cannot consume the slide itself.
+			view.reveal.snap(0);
+			view.reveal.to(1, SDL_GetTicks(), 180);
+		}
+		if (prefs)
+			x += width * (1 - progress);
+		else
+			y += em * 0.6f * (1 - progress);
 		const SDL_FRect box{x, y, width, height};
 		view.scrollMax = std::max(0.0f, naturalHeight - height);
-		view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
+		view.sampleScroll(SDL_GetTicks());
+		transitioning |= view.scroll != view.scrollTween.target();
+		if (progress != 1)
+			clips.push(finalBox);
 		if (!prefs) {
 			gfx::rounded(renderer, {box.x, box.y + em * 0.25f, box.w, box.h}, em * 0.7f, text::rgb(0, 60));
 			gfx::rounded(renderer, box, em * 0.65f, text::palette::surface);
@@ -382,6 +413,8 @@ bool Tree::paintLayer(const SDL_FRect& viewport, float dockY, SDL_Renderer& rend
 			             {x + width - 4 * scale, y + (height - thumb) * view.scroll / view.scrollMax, 2 * scale, thumb},
 			             scale, text::palette::dim);
 		}
+		if (progress != 1)
+			clips.pop();
 	}
 	float toastY = dockY - em;
 	for (const auto id : children) {
@@ -422,6 +455,7 @@ void Views::dismissHover() {
 	state.cardRect = {};
 	state.tip.clear();
 	state.tipRect.reset();
+	state.reveal.snap(1);
 }
 
 bool Views::motion(float x, float y, bool refresh) {
@@ -455,7 +489,9 @@ bool Views::motion(float x, float y, bool refresh) {
 	std::string_view surface, name, tip;
 	std::optional<SDL_FRect> tipRect;
 	bool hand = false;
-	for (auto it = painted_.rbegin(); it != painted_.rend(); ++it) {
+	// The aside's resizable edge takes the pointer before anything under it.
+	const bool resize = contains(asideGrip_, x, y);
+	for (auto it = painted_.rbegin(); !resize && it != painted_.rend(); ++it) {
 		auto& tree = it->get();
 		const auto hit = tree.hit(x, y);
 		if (!hit)
@@ -498,10 +534,17 @@ bool Views::motion(float x, float y, bool refresh) {
 		}
 		break;
 	}
-	if (hand != state.hand) {
-		state.hand = hand;
+	const auto cursor = resize ? PointerState::Cursor::Resize
+	                  : hand   ? PointerState::Cursor::Hand
+	                           : PointerState::Cursor::Arrow;
+	if (cursor != state.cursor) {
+		// The edge highlights while the pointer is over it.
+		hoverChanged |= (cursor == PointerState::Cursor::Resize) != (state.cursor == PointerState::Cursor::Resize);
+		state.cursor = cursor;
 		if (systemPointer_)
-			SDL_SetCursor(hand ? state.pointer.get() : state.arrow.get());
+			SDL_SetCursor(cursor == PointerState::Cursor::Resize ? state.resize.get()
+			              : cursor == PointerState::Cursor::Hand ? state.pointer.get()
+			                                                     : state.arrow.get());
 	}
 	if (state.surface == surface && state.node == name && state.tip == tip)
 		return hoverChanged;
@@ -568,6 +611,8 @@ bool Views::paintHover(const SDL_FRect& viewport) {
 		if (hoverWakeDelay() != 0)
 			return false;
 		state.shown = true;
+		state.reveal.snap(0);
+		state.reveal.to(1, SDL_GetTicks(), 140);
 		// The HUD's todo pill opens the full checklist; other nodes bring their own `hovercard`.
 		json wire = node.prop("hovercard");
 		if (state.tip.empty() && node.kind == tsp::Kind::Checklist && node.str("mode") == "hud") {
@@ -608,9 +653,16 @@ bool Views::paintHover(const SDL_FRect& viewport) {
 	if (y + height > viewport.y + viewport.h)
 		y = anchor.y - height - gap;
 	y = clampPosition(y, viewport.y, viewport.h, height);
-	state.cardRect = {x, y, width, height};
-	gfx::rounded(renderer_.get(), state.cardRect, em * 0.5f, text::palette::surface2);
-	gfx::roundedBorder(renderer_.get(), state.cardRect, em * 0.5f, text::palette::border, em / 15);
+	const SDL_FRect finalBox{x, y, width, height};
+	const float progress = state.reveal.value(SDL_GetTicks());
+	const bool moving = progress != 1;
+	transitioning_ |= moving;
+	y += em * 0.4f * (1 - progress);
+	state.cardRect = gfx::intersect({x, y, width, height}, finalBox);
+	if (moving)
+		clips_->push(finalBox);
+	gfx::rounded(renderer_.get(), {x, y, width, height}, em * 0.5f, text::palette::surface2);
+	gfx::roundedBorder(renderer_.get(), {x, y, width, height}, em * 0.5f, text::palette::border, em / 15);
 	const SDL_FRect content{x + padX, y + padY, std::max(0.0f, width - padX * 2), std::max(0.0f, height - padY * 2)};
 	clips_->push(content);
 	bool animating = false;
@@ -620,6 +672,8 @@ bool Views::paintHover(const SDL_FRect& viewport) {
 	} else
 		engine_.get().draw(state.title, state.titleLayout, content.x, content.y);
 	clips_->pop();
+	if (moving)
+		clips_->pop();
 	return animating;
 }
 
@@ -638,6 +692,15 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 	const bool hadHover = pointer_->shown || !pointer_->node.empty();
 	switch (event.type) {
 	case SDL_EVENT_MOUSE_MOTION:
+		if (asideDrag_) {
+			// The edge follows the pointer; the width is kept within what the window allows.
+			const float scale = fonts_.size() / 15;
+			const float x = event.motion.x * toOutputX;
+			const float wanted = asideDrag_->second + (asideDrag_->first - x) / scale;
+			const float most = std::max(300.0f, lastViewport_.w / scale - 360);
+			asidePreferred_ = std::clamp(wanted, 300.0f, most);
+			return true;
+		}
 		if (minimapDrag_) {
 			// The slider follows the pointer: scroll moves by the pointer's travel over the
 			// slider's own range (or 1/scale when the whole transcript fits the strip).
@@ -673,7 +736,7 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 			if (over != 0 && scrollOwner_)
 				if (const auto main = scrollOwner_->get().document().find("main")) {
 					auto& view = scrollOwner_->get().at(*main);
-					view.scroll = std::clamp(view.scroll + over, 0.0f, std::max(0.0f, contentHeight_ - mainClip_.h));
+					view.snapScroll(std::clamp(view.scroll + over, 0.0f, std::max(0.0f, contentHeight_ - mainClip_.h)));
 					view.stick = false;
 					mainScroll_ = view.scroll;
 				}
@@ -689,6 +752,18 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 				menu_.clear();
 			return true;
 		}
+		if (event.button.button == SDL_BUTTON_LEFT
+		    && contains(asideGrip_, event.button.x * toOutputX, event.button.y * toOutputY)) {
+			const float scale = fonts_.size() / 15;
+			// Start from the width shown, which the window may have clamped.
+			const float most = std::max(300.0f, lastViewport_.w / scale - 360);
+			asidePreferred_ = std::clamp((lastViewport_.w - mainClip_.w) / scale, 300.0f, most);
+			asideDrag_ = std::pair{event.button.x * toOutputX, asidePreferred_};
+			dismissHover();
+			if (systemPointer_)
+				SDL_CaptureMouse(true);
+			return true;
+		}
 		if (event.button.button == SDL_BUTTON_LEFT && minimapScale_ > 0
 		    && contains(minimap_, event.button.x * toOutputX, event.button.y * toOutputY)) {
 			// A press beside the slider brings that part of the transcript to the middle of the
@@ -697,6 +772,8 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 			const float sliderTop = minimap_.y + mainScroll_ * minimapScale_ - minimapScroll_;
 			if (y < sliderTop || y > sliderTop + mainClip_.h * minimapScale_)
 				scrollMainTo((y - minimap_.y + minimapScroll_) / minimapScale_ - mainClip_.h * 0.5f);
+			else
+				scrollMainTo(mainScroll_);
 			minimapDrag_ = std::pair{y, mainScroll_};
 			dismissHover();
 			if (systemPointer_)
@@ -775,6 +852,7 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 			// A press on plain transcript text starts a selection drag; a double click selects the word.
 			if (!targeted && contains(mainClip_, x, y)) {
 				selection_.emplace(SDL_FPoint{x, y + mainScroll_}, SDL_FPoint{x, y + mainScroll_});
+				scrollMainTo(mainScroll_);
 				selectWord_ = event.button.clicks >= 2;
 				selecting_ = !selectWord_;
 				if (selecting_ && systemPointer_)
@@ -785,6 +863,12 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 		return hadHover || hadSelection;
 	}
 	case SDL_EVENT_MOUSE_BUTTON_UP:
+		if (asideDrag_ && event.button.button == SDL_BUTTON_LEFT) {
+			asideDrag_.reset();
+			if (systemPointer_)
+				SDL_CaptureMouse(false);
+			return true;
+		}
 		if (minimapDrag_ && event.button.button == SDL_BUTTON_LEFT) {
 			minimapDrag_.reset();
 			if (systemPointer_)
@@ -887,7 +971,7 @@ bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
 		if (systemPointer_)
 			SDL_SetCursor(pointer_->arrow.get());
 		pointer_->position = {-1, -1};
-		pointer_->hand = false;
+		pointer_->cursor = PointerState::Cursor::Arrow;
 		return hadHover;
 	default:
 		break;
@@ -971,11 +1055,16 @@ void Views::openMenu(float x, float y) {
 	// Open at the pointer, flipped back inside the viewport when it would overflow.
 	menuRect_ = {std::min(x, lastViewport_.x + lastViewport_.w - width),
 	             std::min(y, lastViewport_.y + lastViewport_.h - height), width, height};
+	menuReveal_.snap(0);
+	menuReveal_.to(1, SDL_GetTicks(), 140);
+	menuPaintRect_ = menuRect_;
+	menuPaintRect_.y += em * 0.4f * (1 - menuReveal_.value(SDL_GetTicks()));
+	menuClip_ = gfx::intersect(menuRect_, lastViewport_);
 }
 
 std::optional<size_t> Views::menuEntryAt(float x, float y) const {
-	const float em = fonts_.size(), row = fonts_.lineHeight() + em * 0.6f, top = menuRect_.y + em * 0.3f;
-	if (x < menuRect_.x || x >= menuRect_.x + menuRect_.w || y < top
+	const float em = fonts_.size(), row = fonts_.lineHeight() + em * 0.6f, top = menuPaintRect_.y + em * 0.3f;
+	if (!contains(menuClip_, x, y) || x < menuPaintRect_.x || x >= menuPaintRect_.x + menuPaintRect_.w || y < top
 	    || y >= top + row * static_cast<float>(menu_.size()))
 		return std::nullopt;
 	return static_cast<size_t>((y - top) / row);
@@ -1034,15 +1123,23 @@ void Views::paintMenu() {
 		return;
 	const float em = fonts_.size(), row = fonts_.lineHeight() + em * 0.6f;
 	auto& renderer = renderer_.get();
-	gfx::rounded(renderer, {menuRect_.x, menuRect_.y + em * 0.2f, menuRect_.w, menuRect_.h}, em * 0.5f,
-	             text::rgb(0, 70));
-	gfx::rounded(renderer, menuRect_, em * 0.5f, text::palette::surface2);
-	gfx::roundedBorder(renderer, menuRect_, em * 0.5f, text::palette::border);
+	const float progress = menuReveal_.value(SDL_GetTicks());
+	const bool moving = progress != 1;
+	transitioning_ |= moving;
+	menuPaintRect_ = menuRect_;
+	menuPaintRect_.y += em * 0.4f * (1 - progress);
+	menuClip_ = gfx::intersect(menuRect_, lastViewport_);
+	const auto rect = menuPaintRect_;
+	if (moving)
+		clips_->push(menuRect_);
+	gfx::rounded(renderer, {rect.x, rect.y + em * 0.2f, rect.w, rect.h}, em * 0.5f, text::rgb(0, 70));
+	gfx::rounded(renderer, rect, em * 0.5f, text::palette::surface2);
+	gfx::roundedBorder(renderer, rect, em * 0.5f, text::palette::border);
 	const auto hovered = menuEntryAt(pointer_->position.x, pointer_->position.y);
 	for (size_t index = 0; index < menu_.size(); ++index) {
 		const auto& entry = menu_[index];
-		const SDL_FRect item{menuRect_.x + em * 0.3f, menuRect_.y + em * 0.3f + row * static_cast<float>(index),
-		                     menuRect_.w - em * 0.6f, row};
+		const SDL_FRect item{rect.x + em * 0.3f, rect.y + em * 0.3f + row * static_cast<float>(index),
+		                     rect.w - em * 0.6f, row};
 		if (hovered == index && entry.enabled)
 			gfx::rounded(renderer, item, em * 0.35f, text::palette::border);
 		const text::Runs runs{{entry.label, {.color = entry.enabled ? text::palette::fg : text::palette::dim}}};
@@ -1056,6 +1153,8 @@ void Views::paintMenu() {
 		engine_.get().draw(keys, keysLayout, item.x + item.w - em * 0.7f - keysLayout.width,
 		                   item.y + (row - keysLayout.height) * 0.5f);
 	}
+	if (moving)
+		clips_->pop();
 }
 
 std::optional<std::pair<std::reference_wrapper<Tree>, tsp::NodeId>> Views::resolve(const EditorRef& ref) {
@@ -1192,7 +1291,7 @@ bool Tree::interactiveAt(float x, float y) const {
 }
 
 bool Views::pointerCaptured() const {
-	return pointer_->number.has_value() || selecting_ || editorDrag_.has_value();
+	return pointer_->number.has_value() || selecting_ || editorDrag_.has_value() || asideDrag_.has_value();
 }
 
 std::string Views::selectionText() {

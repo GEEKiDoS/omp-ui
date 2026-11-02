@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include "core/text_util.h"
+#include "gfx/tween.h"
 #include "text/spans.h"
 
 #include <SDL3/SDL.h>
@@ -85,7 +86,7 @@ void writeDefaults(const std::filesystem::path& folder) {
 	if (std::filesystem::exists(folder / "config.json", error))
 		return;
 	std::filesystem::create_directories(folder / "themes", error);
-	writeJson(folder / "config.json", {{"theme", "dark"}});
+	writeJson(folder / "config.json", {{"theme", "dark"}, {"animations", true}});
 	for (const bool dark : {true, false}) {
 		const auto file = folder / "themes" / (dark ? "dark.json" : "light.json");
 		if (!std::filesystem::exists(file, error))
@@ -166,13 +167,15 @@ std::filesystem::path settingsFolder() {
 	return pref ? text::utf8Path(pref.get()) : std::filesystem::path();
 }
 
-Theme applyTheme(bool userConfig) {
+Theme applyTheme(bool userConfig, const std::filesystem::path& configFile) {
 	const auto folder = settingsFolder();
 	const bool found = !folder.empty();
-	if (found && userConfig)
+	if (found && userConfig && configFile.empty())
 		writeDefaults(folder);
 	Theme theme;
-	const auto config = found && userConfig ? readJson(folder / "config.json") : json();
+	const auto config = !configFile.empty() ? readJson(configFile)
+	                  : found && userConfig ? readJson(folder / "config.json")
+	                                        : json();
 	if (const char* forced = SDL_getenv("OMP_UI_THEME"); forced && *forced)
 		theme.name = forced;
 	else if (config.is_object() && config.contains("theme") && config["theme"].is_string())
@@ -183,6 +186,13 @@ Theme applyTheme(bool userConfig) {
 		else
 			SDL_Log("config.json: \"dimAfter\" is not a number of seconds >= 0");
 	}
+	if (config.is_object() && config.contains("animations")) {
+		if (config["animations"].is_boolean())
+			theme.animations = config["animations"].get<bool>();
+		else
+			SDL_Log("config.json: \"animations\" is not a boolean");
+	}
+	gfx::animations = theme.animations;
 	// Test runs keep the built-in palettes even when the user edited themes/dark.json.
 	const bool builtin = theme.name == "dark" || theme.name == "light";
 	json file;

@@ -2,6 +2,7 @@
 
 #include "core/host.h"
 #include "core/pty.h"
+#include "gfx/tween.h"
 #include "view/view_tree.h"
 
 #include <mutex>
@@ -69,23 +70,32 @@ struct SidebarHit {
 	size_t index = 0;
 };
 struct Sidebar {
+	Sidebar() { expansion.snap(1); }
 	bool collapsed = false;
 	std::optional<size_t> hovered;
 	float pointerX = -1, pointerY = -1, scroll = 0;
 	Uint64 hoverSince = 0;
-	float width(const text::Fonts& fonts) const;
+	gfx::Tween expansion;
+	void toggle();
+	bool transitioning(Uint64 now = SDL_GetTicks()) const { return expansion.active(now); }
+	float width(const text::Fonts& fonts, Uint64 now = SDL_GetTicks()) const;
+	float targetWidth(const text::Fonts& fonts) const;
 	float rowHeight(const text::Fonts& fonts) const;
 	float headerHeight(const text::Fonts& fonts) const;
 	float plusY(const text::Fonts& fonts, float height, size_t count) const;
-	SidebarHit hit(float x, float y, int button, const text::Fonts& fonts, float height, size_t count) const;
-	bool motion(float x, float y, const text::Fonts& fonts, float height, size_t count);
-	bool wheel(float delta, const text::Fonts& fonts, float height, size_t count);
+	SidebarHit hit(float x, float y, int button, const text::Fonts& fonts, float height, size_t count,
+	               float visibleWidth, bool moving) const;
+	bool motion(float x, float y, const text::Fonts& fonts, float height, size_t count, float visibleWidth,
+	            bool moving);
+	bool wheel(float delta, const text::Fonts& fonts, float height, size_t count, bool moving);
 	void reveal(size_t index, const text::Fonts& fonts, float height, size_t count);
 	// `translucent`: the window has an alpha framebuffer, so the sidebar may be see-through.
 	bool paint(SDL_Renderer& renderer, text::Engine& engine, const text::Fonts& fonts,
-	           std::span<const std::unique_ptr<Tab>> tabs, size_t active, float height, bool translucent) const;
+	           std::span<const std::unique_ptr<Tab>> tabs, size_t active, float height, float visibleWidth,
+	           bool translucent) const;
 	void paintTooltip(SDL_Renderer& renderer, text::Engine& engine, const text::Fonts& fonts,
-	                  std::span<const std::unique_ptr<Tab>> tabs, float outputWidth, float outputHeight) const;
+	                  std::span<const std::unique_ptr<Tab>> tabs, float outputWidth, float outputHeight,
+	                  bool moving) const;
 	int wakeDelay() const;
 };
 

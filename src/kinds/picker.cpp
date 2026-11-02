@@ -303,6 +303,20 @@ void drawButton(PickerButton& button, text::Engine& engine, SDL_Renderer& render
 } // namespace
 
 void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts) {
+	if (cache.shownFocus != node.str("focus") || cache.shownScope != node.str("scope")
+	    || cache.selected != node.str("selected")) {
+		cache.revealSelection |= cache.shownFocus != node.str("focus") && node.str("focus") == "list";
+		cache.shownFocus = node.str("focus");
+		cache.shownScope = node.str("scope");
+		const auto now = SDL_GetTicks();
+		cache.scroll = cache.scrollTween.value(now);
+		cache.scopesScroll = cache.scopesScrollTween.value(now);
+		cache.previewScroll = cache.previewScrollTween.value(now);
+		cache.scrollTween.snap(cache.scroll);
+		cache.scopesScrollTween.snap(cache.scopesScroll);
+		cache.previewScrollTween.snap(cache.previewScroll);
+	}
+	cache.revealSelection |= cache.selected != node.str("selected");
 	std::array<double, 8> stamps{};
 	size_t stampIndex = 0;
 	for (const auto name : {"items", "itemsAdd", "itemsDel", "order", "hits", "current", "layout", "columns"}) {
@@ -313,7 +327,6 @@ void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine,
 		cache.rows.clear();
 		cache.catalogueStamps = stamps;
 		cache.fontSize = fonts.size();
-		cache.selected.clear();
 		cache.shown = 0;
 		std::unordered_map<std::string_view, size_t> byId;
 		const auto& items = node.prop("items");
@@ -487,6 +500,7 @@ void layoutPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engin
                   float width, float height) {
 	if (cache.width == width && cache.height == height && cache.children == node.children.size())
 		return;
+	const auto previousList = cache.listBox;
 	cache.width = width;
 	cache.height = height;
 	cache.children = node.children.size();
@@ -667,18 +681,39 @@ void layoutPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engin
 	if (!cache.scopes.empty())
 		cache.scopesHeight -= gap;
 	cache.scopesMax = std::max(0.0f, cache.scopesHeight - bodyH);
-	cache.scopesScroll = std::clamp(cache.scopesScroll, 0.0f, cache.scopesMax);
+	const float scopesDestination = std::clamp(cache.scopesScrollTween.target(), 0.0f, cache.scopesMax);
+	if (scopesDestination != cache.scopesScrollTween.target())
+		cache.scopesScrollTween.snap(scopesDestination);
+	cache.scopesScroll = std::clamp(cache.scopesScrollTween.value(SDL_GetTicks()), 0.0f, cache.scopesMax);
 	cache.scrollMax = std::max(0.0f, cache.contentHeight - cache.listBox.h);
+	const float destination = std::clamp(cache.scrollTween.target(), 0.0f, cache.scrollMax);
+	if (destination != cache.scrollTween.target())
+		cache.scrollTween.snap(destination);
+	cache.scroll = std::clamp(cache.scrollTween.value(SDL_GetTicks()), 0.0f, cache.scrollMax);
+	cache.revealSelection |= cache.selected != node.str("selected") || previousList.w != cache.listBox.w
+	                      || previousList.h != cache.listBox.h;
 	cache.selected = node.str("selected");
+	float selectedTop = -1, selectedHeight = 0;
 	for (const auto& row : cache.rows)
 		if (!row.group && row.id == cache.selected) {
-			if (row.y < cache.scroll)
-				cache.scroll = row.y;
-			else if (row.y + row.height > cache.scroll + cache.listBox.h)
-				cache.scroll = row.y + row.height - cache.listBox.h;
+			selectedTop = row.y;
+			selectedHeight = row.height;
+			cache.revealSelection |= cache.selectedTop != row.y || cache.selectedHeight != row.height;
+			if (cache.revealSelection) {
+				if (row.y < cache.scroll)
+					cache.scroll = row.y;
+				else if (row.y + row.height > cache.scroll + cache.listBox.h)
+					cache.scroll = row.y + row.height - cache.listBox.h;
+			}
 			break;
 		}
-	cache.scroll = std::clamp(cache.scroll, 0.0f, cache.scrollMax);
+	cache.selectedTop = selectedTop;
+	cache.selectedHeight = selectedHeight;
+	if (cache.revealSelection) {
+		cache.scroll = std::clamp(cache.scroll, 0.0f, cache.scrollMax);
+		cache.scrollTween.snap(cache.scroll);
+		cache.revealSelection = false;
+	}
 	const float messageLeft = padding + (node.str("state") == "loading" ? em * 0.8f + gap : 0);
 	line(cache.message, engine, cache.listBox.w - messageLeft - padding);
 }
@@ -686,6 +721,13 @@ void layoutPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engin
 bool paintPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts,
                  SDL_Renderer& renderer, const SDL_FRect& rect, bool focused, view::HitTargets& hits) {
 	layoutPicker(node, cache, engine, fonts, rect.w, rect.h);
+	const auto now = SDL_GetTicks();
+	cache.scroll = std::clamp(cache.scrollTween.value(now), 0.0f, cache.scrollMax);
+	cache.scopesScroll = std::clamp(cache.scopesScrollTween.value(now), 0.0f, cache.scopesMax);
+	const float previewDestination = std::clamp(cache.previewScrollTween.target(), 0.0f, cache.previewMax);
+	if (previewDestination != cache.previewScrollTween.target())
+		cache.previewScrollTween.snap(previewDestination);
+	cache.previewScroll = std::clamp(cache.previewScrollTween.value(now), 0.0f, cache.previewMax);
 	bool columnsGrew = false;
 	const auto clockSecond = static_cast<int64_t>(SDL_GetTicks() / 1000);
 	const auto firstClock = std::lower_bound(cache.rows.begin(), cache.rows.end(), cache.scroll,
@@ -712,6 +754,8 @@ bool paintPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine
 		cache.width = -1;
 		layoutPicker(node, cache, engine, fonts, rect.w, rect.h);
 	}
+	cache.transitioning =
+	    cache.scrollTween.active(now) || cache.scopesScrollTween.active(now) || cache.previewScrollTween.active(now);
 	cache.painted = rect;
 	const float em = fonts.size(), pitch = fonts.lineHeight(), unit = em / 15;
 	const float padding = em * gfx::space::md, inset = em * gfx::space::xs, gap = em * gfx::space::sm;
@@ -925,15 +969,17 @@ bool paintPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine
 
 bool scrollPicker(PickerCache& cache, float x, float y, float delta) {
 	if (contains(translated(cache.listBox, cache.painted), x, y)) {
-		cache.scroll = std::clamp(cache.scroll + delta, 0.0f, cache.scrollMax);
+		cache.scrollTween.to(std::clamp(cache.scrollTween.target() + delta, 0.0f, cache.scrollMax), SDL_GetTicks());
 		return true;
 	}
 	if (contains(translated(cache.scopesBox, cache.painted), x, y)) {
-		cache.scopesScroll = std::clamp(cache.scopesScroll + delta, 0.0f, cache.scopesMax);
+		cache.scopesScrollTween.to(std::clamp(cache.scopesScrollTween.target() + delta, 0.0f, cache.scopesMax),
+		                           SDL_GetTicks());
 		return true;
 	}
 	if (contains(translated(cache.previewBox, cache.painted), x, y)) {
-		cache.previewScroll = std::clamp(cache.previewScroll + delta, 0.0f, cache.previewMax);
+		cache.previewScrollTween.to(std::clamp(cache.previewScrollTween.target() + delta, 0.0f, cache.previewMax),
+		                            SDL_GetTicks());
 		return true;
 	}
 	return false;

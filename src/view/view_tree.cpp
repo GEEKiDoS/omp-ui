@@ -108,6 +108,26 @@ void disclosure(SDL_Renderer& renderer, SDL_FPoint center, float em, bool collap
 }
 
 } // namespace
+void NodeView::snapScroll(float value) {
+	scroll = value;
+	scrollTween.snap(value);
+}
+void NodeView::sampleScroll(Uint64 now) {
+	const float destination = std::clamp(scrollTween.target(), 0.0f, scrollMax);
+	const float value = scrollTween.value(now), bounded = std::clamp(value, 0.0f, scrollMax);
+	if (destination != scrollTween.target())
+		snapScroll(destination);
+	else if (value != bounded)
+		snapScroll(bounded);
+	else
+		scroll = value;
+}
+void NodeView::wheelScroll(float delta, Uint64 now) {
+	sampleScroll(now);
+	scrollTween.to(std::clamp(scrollTween.target() + delta, 0.0f, scrollMax), now);
+	scroll = scrollTween.value(now);
+	stick = scrollTween.target() >= scrollMax - 2;
+}
 
 Tree::Tree(tsp::Surface& surface, text::Engine& engine, const text::Fonts& fonts,
            std::function<void(int)> runningChanged, ImageLookup images)
@@ -323,6 +343,8 @@ void Tree::display(tsp::NodeId id) {
 		hidden |= collapsed(parent) && !hasPreview(doc_.at(parent)) && !headerBranch;
 	}
 	YGNodeStyleSetDisplay(at(id).yoga.get(), hidden ? YGDisplayNone : YGDisplayFlex);
+	if (hidden)
+		at(id).revealPaint = 0;
 	for (const auto child : doc_.at(id).children)
 		display(child);
 }
@@ -680,7 +702,7 @@ void Tree::textChanged(tsp::NodeId id) {
 			if (YGNodeStyleGetOverflow(ancestor.yoga.get()) != YGOverflowScroll)
 				continue;
 			if (ancestor.stick) {
-				ancestor.scroll = std::numeric_limits<float>::max();
+				ancestor.snapScroll(std::numeric_limits<float>::max());
 				if (doc_.at(parent).id == "main")
 					doc_.reveals.emplace_back(doc_.at(id).id, "end");
 			}
@@ -892,13 +914,18 @@ float Tree::height(std::string_view region) const {
 	const auto id = doc_.find(region);
 	return id ? YGNodeLayoutGetHeight(at(*id).yoga.get()) : 0;
 }
-void Tree::beginPaint(bool partial, bool more) {
+void Tree::beginPaint(bool partial, bool more, bool transitions) {
 	targets_.freeze(partial);
 	partial_ = partial;
 	if (more)
 		return; // Another damage region of the same frame: keep what earlier regions recorded.
 	animated.clear();
 	relayout = false;
+	transitioning = false;
+	if (!partial) {
+		++paintSerial_;
+		transitionsReady_ = transitions;
+	}
 	// Every leaf that schedules a wake-up is an animation area, so a partial paint repaints all
 	// of them and rebuilds the wake time; hit targets and the caret come from the last full paint.
 	nextWake = 0;
@@ -908,6 +935,19 @@ void Tree::beginPaint(bool partial, bool more) {
 	targets_.clear();
 	if (const auto focus = doc_.focus())
 		at(*focus).caret.reset();
+}
+float Tree::reveal(NodeView& view, Uint64 duration) {
+	if (view.revealPaint == paintSerial_)
+		return view.revealValue;
+	const Uint64 now = SDL_GetTicks();
+	if (!view.revealPaint || view.revealPaint + 1 < paintSerial_) {
+		view.reveal.snap(transitionsReady_ ? 0.0f : 1.0f);
+		view.reveal.to(1, now, duration);
+	}
+	view.revealPaint = paintSerial_;
+	view.revealValue = view.reveal.value(now);
+	transitioning |= view.revealValue != 1;
+	return view.revealValue;
 }
 bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer& renderer, gfx::ClipStack& clips) {
 	auto& view = at(id);
@@ -931,6 +971,7 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		targets_.bind(id, gfx::intersect(rect, clips.current()));
 		bool animating = kinds::paintPicker(node, cache, engine_.get(), fonts_, renderer, sheet,
 		                                    doc_.focus() == id || !doc_.focus(), targets_);
+		transitioning |= cache.transitioning;
 		if (animating || cache.nextWake >= 0)
 			animated.push_back(gfx::intersect(rect, clips.current()));
 		view.caret = cache.caret;
@@ -944,11 +985,21 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 			for (const auto child : node.children) {
 				const auto childYoga = at(child).yoga.get();
 				YGNodeStyleSetWidth(childYoga, preview.w);
-				YGNodeCalculateLayout(childYoga, preview.w, YGUndefined, YGDirectionLTR);
+				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
+				    || YGNodeLayoutGetWidth(childYoga) != preview.w)
+					YGNodeCalculateLayout(childYoga, preview.w, YGUndefined, YGDirectionLTR);
 				contentHeight += YGNodeLayoutGetHeight(childYoga) + em * gfx::space::sm;
 			}
 			cache.previewMax = std::max(0.0f, contentHeight - preview.h);
-			cache.previewScroll = std::clamp(cache.previewScroll, 0.0f, cache.previewMax);
+			const float destination = std::clamp(cache.previewScrollTween.target(), 0.0f, cache.previewMax);
+			if (destination != cache.previewScrollTween.target())
+				cache.previewScrollTween.snap(destination);
+			cache.previewScroll = cache.previewScrollTween.value(SDL_GetTicks());
+			const float bounded = std::clamp(cache.previewScroll, 0.0f, cache.previewMax);
+			if (cache.previewScroll != bounded) {
+				cache.previewScrollTween.snap(bounded);
+				cache.previewScroll = bounded;
+			}
 			clips.push(preview);
 			float y = preview.y - cache.previewScroll;
 			for (const auto child : node.children) {
@@ -978,7 +1029,9 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				const auto childYoga = at(child).yoga.get();
 				const float width = std::max(1.0f, rect.w - em * 2);
 				YGNodeStyleSetWidth(childYoga, width);
-				YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
+				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
+				    || YGNodeLayoutGetWidth(childYoga) != width)
+					YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
 				statusHeight = YGNodeLayoutGetHeight(childYoga);
 			}
 		if (cache.previewHeight != statusHeight) {
@@ -988,6 +1041,7 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		targets_.bind(id, gfx::intersect(rect, clips.current()));
 		view.caret = kinds::paintPrefs(node, cache, engine_.get(), fonts_, renderer, rect,
 		                               doc_.focus() == id || !doc_.focus(), targets_);
+		transitioning |= cache.transitioning;
 		bool animating = false;
 		clips.push(cache.bodyRect);
 		for (const auto child : node.children) {
@@ -1001,7 +1055,9 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 			} else if (role == "omp.prefs.editor") {
 				const float width = std::max(1.0f, cache.bodyRect.w - em * 2);
 				YGNodeStyleSetWidth(childYoga, width);
-				YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
+				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
+				    || YGNodeLayoutGetWidth(childYoga) != width)
+					YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
 				const float height = std::min(cache.bodyRect.h, YGNodeLayoutGetHeight(childYoga));
 				targets_.bind(id, cache.bodyRect);
 				targets_.add(cache.bodyRect, TargetKind::Block);
@@ -1009,6 +1065,32 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				    paintNode(child, cache.bodyRect.x + em - YGNodeLayoutGetLeft(childYoga),
 				              cache.bodyRect.y + (cache.bodyRect.h - height) * 0.5f - YGNodeLayoutGetTop(childYoga),
 				              renderer, clips);
+			} else if (doc_.at(child).kind == tsp::Kind::Picker && !doc_.at(child).flag("hidden")) {
+				// A choice with too many options for a menu (themes) opens as a picker sheet over
+				// the page; the page under it stays dimmed and inert until it closes.
+				auto& picker = *at(child).leaf.picker;
+				const float inset = em * gfx::space::sm;
+				const float width = std::max(1.0f, cache.bodyRect.w - inset * 2);
+				const float height = std::max(1.0f, cache.bodyRect.h - inset * 2);
+				kinds::layoutPicker(doc_.at(child), picker, engine_.get(), fonts_, width, height);
+				YGNodeStyleSetWidth(childYoga, width);
+				YGNodeStyleSetHeight(childYoga, std::max(height, picker.minimumHeight));
+				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
+				    || YGNodeLayoutGetWidth(childYoga) != width
+				    || YGNodeLayoutGetHeight(childYoga) != std::max(height, picker.minimumHeight))
+					YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
+				gfx::fill(renderer, rect, text::rgb(0, 110));
+				targets_.bind(id, rect);
+				targets_.add(rect, TargetKind::Block);
+				const float progress = reveal(at(child));
+				const SDL_FRect box{cache.bodyRect.x + inset, cache.bodyRect.y + inset, width, height};
+				if (progress != 1)
+					clips.push(box);
+				animating |=
+				    paintNode(child, box.x - YGNodeLayoutGetLeft(childYoga),
+				              box.y + em * 0.6f * (1 - progress) - YGNodeLayoutGetTop(childYoga), renderer, clips);
+				if (progress != 1)
+					clips.pop();
 			}
 		}
 		clips.pop();
@@ -1103,7 +1185,8 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				bottom = std::max(bottom, YGNodeLayoutGetTop(at(child).yoga.get())
 				                              + YGNodeLayoutGetHeight(at(child).yoga.get()));
 		view.scrollMax = std::max(0.0f, bottom + YGNodeLayoutGetPadding(yoga, YGEdgeBottom) - rect.h);
-		view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
+		view.sampleScroll(SDL_GetTicks());
+		transitioning |= view.scroll != view.scrollTween.target();
 	}
 	if (node.kind == tsp::Kind::List) {
 		if (view.selected != node.str("selected")) {
@@ -1120,8 +1203,8 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				if (end > view.scroll + rect.h)
 					view.scroll = end - rect.h;
 			}
+			view.snapScroll(std::clamp(view.scroll, 0.0f, view.scrollMax));
 		}
-		view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
 	}
 	if ((scrollBox || scrollLeaf) && !partial_)
 		scrollers_.push_back({gfx::intersect(rect, clips.current()), id});
@@ -1138,13 +1221,15 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 			view.leaf.budget = 0;
 			const float natural = kinds::measure(node, view.leaf, engine_.get(), fonts_, rect.w).y;
 			view.scrollMax = std::max(0.0f, natural - rect.h);
-			view.scroll = std::clamp(view.scroll, 0.0f, view.scrollMax);
+			view.sampleScroll(SDL_GetTicks());
+			transitioning |= view.scroll != view.scrollTween.target();
 			leafRect = {rect.x, rect.y - view.scroll, rect.w, std::max(rect.h, natural)};
 		}
 		const auto result =
 		    kinds::paint(node, view.leaf, engine_.get(), fonts_, renderer, leafRect, doc_.focus() == id, targets_);
 		view.caret = result.caret;
 		animating |= result.animating;
+		transitioning |= result.transitioning;
 		// Timed leaves (spinners, progress sweeps, elapsed clocks) redraw on their wake-ups, so
 		// they are animation areas too: the next frame repaints just them.
 		if (result.animating || result.nextWake)
@@ -1252,9 +1337,12 @@ bool Tree::paint(std::string_view region, float x, float y, SDL_Renderer& render
 }
 std::optional<SDL_FRect> Tree::focusedCaret() const {
 	const auto focus = doc_.focus();
-	return focus ? at(*focus).caret : std::nullopt;
+	if (!focus || !at(*focus).caret)
+		return std::nullopt;
+	const auto rect = gfx::intersect(*at(*focus).caret, at(*focus).hitRect);
+	return rect.w > 0 && rect.h > 0 ? std::optional(rect) : std::nullopt;
 }
-float Tree::asideWidth(float viewportWidth) const {
+float Tree::asideWidth(float viewportWidth, float preferred) const {
 	const auto layer = doc_.find("layer");
 	if (!layer)
 		return 0;
@@ -1263,9 +1351,42 @@ float Tree::asideWidth(float viewportWidth) const {
 		if (node.kind != tsp::Kind::Prefs || node.flag("hidden"))
 			continue;
 		const float scale = fonts_.size() / 15;
-		return viewportWidth < 700 * scale ? viewportWidth : std::min(viewportWidth, 400 * scale);
+		if (viewportWidth < 700 * scale)
+			return viewportWidth;
+		// At least 300 (the sheet's controls stay usable), leaving the transcript at least 360.
+		const float least = 300 * scale, most = std::max(least, viewportWidth - 360 * scale);
+		return std::clamp(preferred * scale, least, most);
 	}
 	return 0;
+}
+float Tree::presentedAsideWidth(float width) const {
+	const auto layer = doc_.find("layer");
+	if (width > 0 && layer)
+		for (const auto child : doc_.at(*layer).children)
+			if (doc_.at(child).kind == tsp::Kind::Prefs && !doc_.at(child).flag("hidden")) {
+				const auto& view = at(child);
+				return width
+				     * (view.revealPaint == paintSerial_ ? view.revealValue : view.reveal.value(SDL_GetTicks()));
+			}
+	return width;
+}
+bool Tree::prepareAside(float width, bool immediate) {
+	const auto layer = doc_.find("layer");
+	if (!layer || width <= 0)
+		return false;
+	for (const auto child : doc_.at(*layer).children)
+		if (doc_.at(child).kind == tsp::Kind::Prefs && !doc_.at(child).flag("hidden")) {
+			auto& view = at(child);
+			YGNodeStyleSetWidth(view.yoga.get(), width);
+			if (immediate) {
+				view.reveal.snap(1);
+				view.revealValue = 1;
+				view.revealPaint = paintSerial_;
+			} else
+				reveal(view, 180);
+			return view.revealValue != 1;
+		}
+	return false;
 }
 void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 	const auto main = doc_.find("main");
@@ -1278,7 +1399,7 @@ void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 	const float max = std::max(0.0f, contentHeight - viewportHeight);
 	for (const auto& [id, where] : doc_.reveals) {
 		if (where == "end") {
-			view.scroll = max;
+			view.snapScroll(max);
 			view.stick = true;
 			continue;
 		}
@@ -1294,6 +1415,7 @@ void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 		if (!scroller)
 			continue;
 		auto& owner = scroller == *main ? view : at(scroller);
+		owner.sampleScroll(SDL_GetTicks());
 		const float ownerHeight = scroller == *main ? viewportHeight : owner.rect.h;
 		if (scroller == *main)
 			y += contentHeight - height("main");
@@ -1308,14 +1430,14 @@ void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 			owner.scroll = y + h - ownerHeight;
 		if (scroller == *main)
 			view.stick = false;
-		else
-			owner.scroll = std::clamp(owner.scroll, 0.0f, owner.scrollMax);
+		owner.snapScroll(std::clamp(owner.scroll, 0.0f, scroller == *main ? max : owner.scrollMax));
 	}
 	for (const auto& [id, by] : doc_.scrolls) {
 		if (by == "end") {
-			view.scroll = max;
+			view.snapScroll(max);
 			view.stick = true;
 		} else {
+			view.sampleScroll(SDL_GetTicks());
 			if (by == "start")
 				view.scroll = 0;
 			else
@@ -1325,8 +1447,8 @@ void Tree::scrollCommands(float viewportHeight, float contentHeight) {
 				                                    : viewportHeight - fonts_.lineHeight());
 			view.stick = false;
 		}
+		view.snapScroll(std::clamp(view.scroll, 0.0f, max));
 	}
-	view.scroll = std::clamp(view.scroll, 0.0f, max);
 	doc_.reveals.clear();
 	doc_.scrolls.clear();
 }
@@ -1429,6 +1551,10 @@ Views::Views(tsp::Session& session, SDL_Renderer& renderer, text::Engine& engine
 		painted_.clear();
 		kept_.clear();
 		trees_.erase(surface.id);
+		if (trees_.empty()) {
+			transitioning_ = false;
+			nextWake_ = relayoutAt_ = 0;
+		}
 	};
 	// Keep/adopt changes presentation order, never the attached document/view pair.
 	session_.surfaceChanged = [this](auto&) {
@@ -1486,29 +1612,38 @@ void Views::themeChanged() {
 float Views::contentWidth(float viewportWidth) const {
 	if (const auto screen = session_.screen()) {
 		const auto& tree = *trees_.at(screen->get().id);
-		return std::max(1.0f, viewportWidth - tree.asideWidth(viewportWidth));
+		return std::max(1.0f, viewportWidth - tree.asideWidth(viewportWidth, asidePreferred_));
 	}
 	for (auto it = session_.surfaces().rbegin(); it != session_.surfaces().rend(); ++it)
 		if ((*it)->open && (*it)->mode != "screen")
-			return std::max(1.0f, viewportWidth - trees_.at((*it)->id)->asideWidth(viewportWidth));
+			return std::max(1.0f, viewportWidth - trees_.at((*it)->id)->asideWidth(viewportWidth, asidePreferred_));
 	return viewportWidth;
 }
+void Views::setWidthTransition(bool active, float finalViewportWidth) {
+	if (widthTransition_ && !active) {
+		forceWidthLayout_ = true;
+		relayoutAt_ = 0;
+		pendingWidth_ = -1;
+	}
+	widthTransition_ = active;
+	widthTransitionViewport_ = finalViewportWidth;
+}
 bool Views::paint(const SDL_FRect& viewport, Paint mode) {
-	const bool partial = mode != Paint::Full, more = mode == Paint::PartialMore;
-	if (!more)
+	const bool partial = mode != Paint::Full && !transitioning(), more = partial && mode == Paint::PartialMore;
+	if (!more && !gather_)
 		nextWake_ = 0;
+	if (!more && !gather_)
+		transitioning_ = false;
 	lastViewport_ = viewport;
 	painted_.clear();
 	active_.reset();
 	scrollOwner_.reset();
 	caret_.reset();
-	const SDL_FRect content{viewport.x, viewport.y, contentWidth(viewport.w), viewport.h};
 	const auto screen = session_.screen();
 	// While the transcript scrolls, the minimap has a lane at the right edge (its width plus a
 	// gap to the window edge) and the column and dock centre in the area left of it, so their
 	// margins match on both sides; otherwise they centre in the whole width.
 	const float em = fonts_.size(), pad = screen ? 0 : em * gfx::space::lg;
-	float area = content.w;
 	kept_.clear();
 	for (const auto& surface : session_.surfaces()) {
 		if (screen) {
@@ -1530,9 +1665,34 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	nodeCount_ = 0;
 	bool relaid = false;
 	for (auto& [id, tree] : trees_) {
-		tree->beginPaint(partial, more);
+		// Copy gathers are unpresented: keep hits, panel visibility and pending animation state.
+		tree->beginPaint(partial || gather_, more || gather_, paintedOnce_);
 		nodeCount_ += tree->document().size();
 	}
+	const float finalViewportWidth = widthTransition_ ? widthTransitionViewport_ : viewport.w;
+	const float finalAsideWidth = active_ ? active_->get().asideWidth(finalViewportWidth, asidePreferred_) : 0;
+	// A viewport-clamped aside follows the same narrower-endpoint rule as the column.
+	asideLayoutWidth_ = widthTransition_ && asideLayoutWidth_ > 0 && finalAsideWidth > 0
+	                      ? std::min(asideLayoutWidth_, finalAsideWidth)
+	                      : finalAsideWidth;
+	const bool hasAside = asideLayoutWidth_ > 0;
+	const bool asideMoving = hasAside && active_->get().prepareAside(asideLayoutWidth_, asideDrag_.has_value());
+	if (!asideMoving && (asideTransition_ || hasAside != asideVisible_))
+		forceWidthLayout_ = true;
+	asideTransition_ = asideMoving;
+	asideVisible_ = hasAside;
+	const float reservedAside = active_ ? active_->get().presentedAsideWidth(asideLayoutWidth_) : 0;
+	const float presentedWidth = std::max(1.0f, viewport.w - reservedAside);
+	const SDL_FRect content{viewport.x, viewport.y, presentedWidth, viewport.h};
+	const float grip = fonts_.size() * 0.3f;
+	asideGrip_ = content.w < viewport.w && content.w > 1
+	               ? SDL_FRect{content.x + content.w - grip, viewport.y, grip * 2, viewport.h}
+	               : SDL_FRect{};
+	float area = content.w;
+	const bool freezeWidth = widthTransition_ || asideMoving;
+	const float finalContentWidth = std::max(1.0f, finalViewportWidth - finalAsideWidth);
+	if (freezeWidth)
+		relayoutAt_ = 0;
 	float dockHeight = 0, maxScroll = 0;
 	auto layOut = [&](bool lane) {
 		area = std::max(1.0f, content.w - (lane ? em * (minimapEms + 1) : 0));
@@ -1541,7 +1701,13 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		// window being dragged), painting the column at its laid-out width meanwhile.
 		constexpr Uint64 settle = 150;
 		const Uint64 now = SDL_GetTicks();
-		if (laidWidth_ > 0 && innerWidth != laidWidth_ && slowRelayout_) {
+		if (freezeWidth) {
+			// Always slide at the narrower endpoint: it fits throughout the transition. A
+			// narrowing re-wrap happens once now; widening keeps its old width until the end.
+			const float finalArea = std::max(1.0f, finalContentWidth - (lane ? em * (minimapEms + 1) : 0));
+			const float finalWidth = std::max(1.0f, finalArea - 2 * pad);
+			innerWidth = laidWidth_ > 0 ? std::min(laidWidth_, finalWidth) : finalWidth;
+		} else if (laidWidth_ > 0 && innerWidth != laidWidth_ && slowRelayout_ && !forceWidthLayout_) {
 			if (innerWidth != pendingWidth_) {
 				pendingWidth_ = innerWidth;
 				pendingSince_ = now;
@@ -1588,6 +1754,8 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		minimapLane_ = maxScroll > 0;
 		layOut(minimapLane_);
 	}
+	if (!freezeWidth)
+		forceWidthLayout_ = false;
 	if (relaid) {
 		lastDirty_ = dirty;
 		lastMeasured_ = measured;
@@ -1595,12 +1763,16 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	float scroll = 0;
 	if (scrollOwner_) {
 		auto& tree = scrollOwner_->get();
-		tree.scrollCommands(mainClip_.h, contentHeight_);
 		if (const auto main = tree.document().find("main")) {
 			auto& view = tree.at(*main);
-			if (view.stick)
-				view.scroll = maxScroll;
-			view.scroll = std::clamp(view.scroll, 0.0f, maxScroll);
+			const Uint64 now = SDL_GetTicks();
+			const bool changedBounds = view.scrollMax != maxScroll;
+			view.scrollMax = maxScroll;
+			view.sampleScroll(now);
+			tree.scrollCommands(mainClip_.h, contentHeight_);
+			if (view.stick && (changedBounds || !view.scrollTween.active(now)))
+				view.snapScroll(maxScroll);
+			tree.transitioning |= view.scroll != view.scrollTween.target();
 			scroll = view.scroll;
 		}
 	}
@@ -1668,7 +1840,9 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		clips.push(content);
 		animating |= tree.paint("dock", columnX(tree, "dock"), dockY, renderer_.get(), clips);
 		clips.pop();
-		animating |= tree.paintLayer(viewport, dockY, renderer_.get(), clips);
+		animating |= tree.paintLayer(viewport, dockY, asideLayoutWidth_, renderer_.get(), clips);
+		if (asideGrip_.w > 0 && (asideDrag_ || contains(asideGrip_, pointer_->position.x, pointer_->position.y)))
+			gfx::fill(renderer_.get(), {content.x + content.w - 1, viewport.y, 2, viewport.h}, text::palette::accent);
 		caret_ = tree.focusedCaret();
 		if (caret_) {
 			caret_->x = std::clamp(caret_->x, viewport.x, viewport.x + viewport.w - caret_->w);
@@ -1690,15 +1864,21 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		schedule(painted.get().nextWake);
 	if (pointer_->card)
 		schedule(pointer_->card->nextWake);
+	transitioning_ |= widthTransition_ || asideMoving;
+	for (const auto& painted : painted_)
+		transitioning_ |= painted.get().transitioning;
+	if (pointer_->card)
+		transitioning_ |= pointer_->card->transitioning;
+	paintedOnce_ = true;
 	clips.pop();
 	// A full paint has drawn every visible picture, so the rest were scrolled away (or belong to
 	// another tab sharing this window's engine).
 	if (!partial)
 		engine_.get().trimPictures();
-	return animating;
+	return animating || transitioning();
 }
 std::optional<std::vector<SDL_FRect>> Views::animatedRegions() const {
-	if (animatedElsewhere_)
+	if (animatedElsewhere_ || transitioning())
 		return std::nullopt;
 	std::vector<SDL_FRect> regions;
 	for (const auto& painted : painted_) {
@@ -1778,7 +1958,7 @@ void Views::scrollMainTo(float value) {
 		return;
 	auto& view = tree.at(*main);
 	const float max = std::max(0.0f, contentHeight_ - mainClip_.h);
-	view.scroll = std::clamp(value, 0.0f, max);
+	view.snapScroll(std::clamp(value, 0.0f, max));
 	view.stick = view.scroll >= max - 2;
 	mainScroll_ = view.scroll;
 }
@@ -1787,8 +1967,10 @@ bool Views::wheel(float x, float y, float deltaPixels) {
 	pointer_->suppressed = true;
 	for (auto it = painted_.rbegin(); it != painted_.rend(); ++it) {
 		auto& tree = it->get();
-		if (tree.scrollAt(x, y, deltaPixels))
+		if (tree.scrollAt(x, y, deltaPixels)) {
+			transitioning_ |= tree.transitioning;
 			return true;
+		}
 		if (const auto target = tree.hit(x, y); target && target->get().kind == TargetKind::Block)
 			return true;
 	}
@@ -1800,8 +1982,9 @@ bool Views::wheel(float x, float y, float deltaPixels) {
 		return false;
 	auto& view = tree.at(*main);
 	const float max = std::max(0.0f, contentHeight_ - mainClip_.h);
-	view.scroll = std::clamp(view.scroll + deltaPixels, 0.0f, max);
-	view.stick = view.scroll >= max - 2;
+	view.scrollMax = max;
+	view.wheelScroll(deltaPixels, SDL_GetTicks());
+	transitioning_ |= view.scroll != view.scrollTween.target();
 	return true;
 }
 std::optional<SDL_FRect> Views::nodeRect(std::string_view surface, std::string_view id) const {
@@ -1816,7 +1999,11 @@ std::optional<SDL_FRect> Views::caretRect(std::string_view surface, std::string_
 	if (found == trees_.end())
 		return std::nullopt;
 	const auto node = found->second->document().find(id);
-	return node ? found->second->at(*node).caret : std::nullopt;
+	if (!node || !found->second->at(*node).caret)
+		return std::nullopt;
+	const auto& view = found->second->at(*node);
+	const auto rect = gfx::intersect(*view.caret, view.hitRect);
+	return rect.w > 0 && rect.h > 0 ? std::optional(rect) : std::nullopt;
 }
 std::string Views::dirtySummary() const {
 	return std::format("Yoga last layout: {} dirty / {} nodes · {} leaf measures (clean branches cached)", lastDirty_,

@@ -20,6 +20,7 @@ struct Theme {
 	// OLED care: seconds without keyboard or mouse input in a window before everything but the
 	// transcript column (sidebar, title bar, margins, minimap, prompt) fades as a vignette. 0: off.
 	double dimAfter = 300;
+	bool animations = true;
 
 	// The window needs a transparent framebuffer (translucent canvas or sidebar).
 	bool transparent() const;
@@ -33,8 +34,8 @@ std::filesystem::path settingsFolder();
 // Chooses and applies the theme at startup, before any window exists.
 //
 // The theme is named by the OMP_UI_THEME environment variable, else by `"theme"` in
-// `config.json` in the settings folder (which may also set `"dimAfter"`, see Theme). A name
-// loads `themes/<name>.json` from that folder:
+// `config.json` in the settings folder (which may also set `"dimAfter"` and `"animations"`,
+// see Theme). A name loads `themes/<name>.json` from that folder:
 //   {
 //     "base": "dark" | "light",
 //     "colors": {"accent": "#2f5bd3", "canvas": "#17191fcc", …},
@@ -48,10 +49,11 @@ std::filesystem::path settingsFolder();
 // are the built-in palettes.
 // Problems are logged and fall back to the built-in parts.
 //
-// `userConfig` reads config.json and, when it is missing, creates it (`{"theme": "dark"}`)
-// together with `themes/dark.json` and `themes/light.json` listing every setting, as starting
-// points. Without it (hidden test runs, tsp-replay) only OMP_UI_THEME counts, and `dark`/`light`
-// are always the built-ins.
-Theme applyTheme(bool userConfig);
+// `userConfig` reads config.json and, when it is missing, creates it (`{"theme": "dark",
+// "animations": true}`) together with `themes/dark.json` and `themes/light.json` listing every
+// setting, as starting points. Without it (hidden test runs, tsp-replay) only OMP_UI_THEME
+// counts, and `dark`/`light` are always the built-ins. An explicit `configFile` is read even
+// without `userConfig`, but never creates defaults there or in the user's settings folder.
+Theme applyTheme(bool userConfig, const std::filesystem::path& configFile = {});
 
 } // namespace app

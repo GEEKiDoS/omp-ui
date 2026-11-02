@@ -242,7 +242,7 @@ int main(int argc, char* argv[]) {
 			dirty |= drive->tick(running);
 		if (!running)
 			break;
-		int timeout = animating ? 33 : -1;
+		int timeout = animating ? (views.transitioning() ? 16 : 33) : -1;
 		const int hoverDelay = views.wakeDelay();
 		if (hoverDelay >= 0)
 			timeout = timeout < 0 ? hoverDelay : std::min(timeout, hoverDelay);

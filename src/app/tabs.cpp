@@ -187,7 +187,15 @@ void RecentFolders::add(const std::string& folder) {
 	output << json(folders_).dump(1, '\t') << '\n';
 }
 
-float Sidebar::width(const text::Fonts& fonts) const {
+void Sidebar::toggle() {
+	collapsed = !collapsed;
+	expansion.to(collapsed ? 0.0f : 1.0f, SDL_GetTicks(), 180);
+	hovered.reset();
+}
+float Sidebar::width(const text::Fonts& fonts, Uint64 now) const {
+	return fonts.size() * (3 + 13 * expansion.value(now));
+}
+float Sidebar::targetWidth(const text::Fonts& fonts) const {
 	return fonts.size() * (collapsed ? 3 : 16);
 }
 float Sidebar::rowHeight(const text::Fonts& fonts) const {
@@ -199,10 +207,15 @@ float Sidebar::headerHeight(const text::Fonts& fonts) const {
 float Sidebar::plusY(const text::Fonts& fonts, float height, size_t count) const {
 	return std::min(height - fonts.size() * 3, headerHeight(fonts) + static_cast<float>(count) * rowHeight(fonts));
 }
-SidebarHit Sidebar::hit(float x, float y, int button, const text::Fonts& fonts, float height, size_t count) const {
-	const float em = fonts.size(), w = width(fonts), header = headerHeight(fonts), plus = plusY(fonts, height, count);
-	if (x < 0 || x >= w || y < 0 || y >= height)
+SidebarHit Sidebar::hit(float x, float y, int button, const text::Fonts& fonts, float height, size_t count,
+                        float visibleWidth, bool moving) const {
+	const float em = fonts.size(), header = headerHeight(fonts), plus = plusY(fonts, height, count);
+	if (x < 0 || x >= visibleWidth || y < 0 || y >= height)
 		return {};
+	// Input uses the last presented width and transition state, not a newer tween sample.
+	// Only the fixed-height toggle stays interactive until the final geometry is painted.
+	if (moving)
+		return {button == SDL_BUTTON_LEFT && y < header ? SidebarAction::Toggle : SidebarAction::None};
 	const auto onButton = [button](SidebarAction left, SidebarAction right) {
 		return button == SDL_BUTTON_LEFT ? left : button == SDL_BUTTON_RIGHT ? right : SidebarAction::None;
 	};
@@ -213,12 +226,13 @@ SidebarHit Sidebar::hit(float x, float y, int button, const text::Fonts& fonts, 
 	const auto index = static_cast<size_t>((y - header + scroll) / rowHeight(fonts));
 	if (index >= count)
 		return {};
-	if (button == SDL_BUTTON_MIDDLE || (button == SDL_BUTTON_LEFT && !collapsed && x >= w - 2 * em))
+	if (button == SDL_BUTTON_MIDDLE || (button == SDL_BUTTON_LEFT && !collapsed && x >= visibleWidth - 2 * em))
 		return {SidebarAction::Close, index};
 	return {onButton(SidebarAction::Select, SidebarAction::TabMenu), index};
 }
-bool Sidebar::motion(float x, float y, const text::Fonts& fonts, float height, size_t count) {
-	const auto target = hit(x, y, SDL_BUTTON_LEFT, fonts, height, count);
+bool Sidebar::motion(float x, float y, const text::Fonts& fonts, float height, size_t count, float visibleWidth,
+                     bool moving) {
+	const auto target = hit(x, y, SDL_BUTTON_LEFT, fonts, height, count, visibleWidth, moving);
 	const auto row = target.action == SidebarAction::Select || target.action == SidebarAction::Close
 	                   ? std::optional<size_t>(target.index)
 	                   : std::nullopt;
@@ -230,7 +244,9 @@ bool Sidebar::motion(float x, float y, const text::Fonts& fonts, float height, s
 	pointerY = y;
 	return changed;
 }
-bool Sidebar::wheel(float delta, const text::Fonts& fonts, float height, size_t count) {
+bool Sidebar::wheel(float delta, const text::Fonts& fonts, float height, size_t count, bool moving) {
+	if (moving)
+		return false;
 	const float max = std::max(0.0f, static_cast<float>(count) * rowHeight(fonts)
 	                                     - (plusY(fonts, height, count) - headerHeight(fonts)));
 	const float next = std::clamp(scroll - delta * rowHeight(fonts), 0.0f, max);
@@ -248,24 +264,28 @@ void Sidebar::reveal(size_t index, const text::Fonts& fonts, float height, size_
 		scroll = std::max(0.0f, top + row - available);
 }
 bool Sidebar::paint(SDL_Renderer& renderer, text::Engine& engine, const text::Fonts& fonts,
-                    std::span<const std::unique_ptr<Tab>> tabs, size_t active, float height, bool translucent) const {
-	const float em = fonts.size(), w = width(fonts), header = headerHeight(fonts), row = rowHeight(fonts),
-	            plus = plusY(fonts, height, tabs.size());
+                    std::span<const std::unique_ptr<Tab>> tabs, size_t active, float height, float visibleWidth,
+                    bool translucent) const {
+	const float em = fonts.size(), w = targetWidth(fonts), header = headerHeight(fonts), row = rowHeight(fonts),
+	            plus = plusY(fonts, height, tabs.size()), offset = visibleWidth - w;
+	gfx::ScopedClip sidebarClip(renderer, {0, 0, visibleWidth, height});
 	// Replace rather than blend, so a translucent sidebar keeps its own alpha over the canvas.
 	const auto fill =
 	    text::premultiplied(translucent ? text::palette::sidebar : text::withAlpha(text::palette::sidebar, 255));
-	const SDL_FRect area{0, 0, w, height};
+	const SDL_FRect area{0, 0, visibleWidth, height};
 	SDL_SetRenderDrawBlendMode(&renderer, SDL_BLENDMODE_NONE);
 	SDL_SetRenderDrawColor(&renderer, fill.r, fill.g, fill.b, fill.a);
 	SDL_RenderFillRect(&renderer, &area);
 	SDL_SetRenderDrawBlendMode(&renderer, SDL_BLENDMODE_BLEND);
-	gfx::line(renderer, {w - 1, 0}, {w - 1, height}, text::palette::border);
-	label(engine, collapsed ? "☰" : "omp", em, (header - fonts.lineHeight()) * 0.5f, w - 2 * em,
+	gfx::line(renderer, {visibleWidth - 1, 0}, {visibleWidth - 1, height}, text::palette::border);
+	// Labels keep the destination width; only their origin and the enclosing clip move.
+	label(engine, collapsed ? "☰" : "omp", offset + em, (header - fonts.lineHeight()) * 0.5f, w - 2 * em,
 	      {.font = text::FontId::Bold, .color = text::palette::fg});
 	if (!collapsed)
-		label(engine, "‹", w - 2 * em, (header - fonts.lineHeight()) * 0.5f, em, {.color = text::palette::muted});
+		label(engine, "‹", offset + w - 2 * em, (header - fonts.lineHeight()) * 0.5f, em,
+		      {.color = text::palette::muted});
 	gfx::ClipStack clip(renderer);
-	clip.push({0, header, w, std::max(0.0f, plus - header)});
+	clip.push({offset, header, w, std::max(0.0f, plus - header)});
 	bool animating = false;
 	for (size_t i = 0; i < tabs.size(); ++i) {
 		const float y = header + static_cast<float>(i) * row - scroll;
@@ -273,14 +293,15 @@ bool Sidebar::paint(SDL_Renderer& renderer, text::Engine& engine, const text::Fo
 			continue;
 		const auto& tab = *tabs[i];
 		if (i == active || hovered == i)
-			gfx::rounded(renderer, {em * 0.4f, y + em * 0.2f, w - em * 0.8f, row - em * 0.4f}, em * 0.45f,
+			gfx::rounded(renderer, {offset + em * 0.4f, y + em * 0.2f, w - em * 0.8f, row - em * 0.4f}, em * 0.45f,
 			             i == active ? text::palette::surface2 : text::palette::hover);
 		if (i == active)
-			gfx::rounded(renderer, {0, y + em * 0.75f, em * 0.18f, row - em * 1.5f}, em * 0.09f, text::palette::accent);
+			gfx::rounded(renderer, {offset, y + em * 0.75f, em * 0.18f, row - em * 1.5f}, em * 0.09f,
+			             text::palette::accent);
 		// Expanded rows start their text at the header's inset; the state (running, attention,
 		// exited) sits at the right end, where hovering shows the close button instead.
 		const bool closeShown = !collapsed && hovered == i;
-		const SDL_FPoint center{collapsed ? em * 1.5f : w - em * 1.25f, y + row * 0.5f};
+		const SDL_FPoint center{offset + (collapsed ? em * 1.5f : w - em * 1.25f), y + row * 0.5f};
 		if (closeShown)
 			label(engine, "×", center.x - em * 0.5f, y + (row - fonts.lineHeight()) * 0.5f, em,
 			      {.color = text::palette::muted});
@@ -295,10 +316,10 @@ bool Sidebar::paint(SDL_Renderer& renderer, text::Engine& engine, const text::Fo
 			label(engine, "×", center.x - em * 0.5f, y + (row - fonts.lineHeight()) * 0.5f, em,
 			      {.color = text::palette::error});
 		else if (collapsed)
-			label(engine, std::to_string(i + 1), em, y + (row - fonts.lineHeight()) * 0.5f, em,
+			label(engine, std::to_string(i + 1), offset + em, y + (row - fonts.lineHeight()) * 0.5f, em,
 			      {.color = i == active ? text::palette::fg : text::palette::dim});
 		if (!collapsed) {
-			const float x = em, textWidth = w - x - em * 2.5f;
+			const float x = offset + em, textWidth = w - em * 3.5f;
 			label(engine, tab.title, x, y + em * 0.55f, textWidth,
 			      {.font = i == active ? text::FontId::Bold : text::FontId::Ui});
 			label(engine, folderName(tab.cwd), x, y + em * 0.65f + fonts.lineHeight(), textWidth,
@@ -306,14 +327,15 @@ bool Sidebar::paint(SDL_Renderer& renderer, text::Engine& engine, const text::Fo
 		}
 	}
 	clip.pop();
-	gfx::line(renderer, {em * 0.75f, plus}, {w - em * 0.75f, plus}, text::palette::border);
-	label(engine, collapsed ? "+" : "+  New tab", em, plus + (em * 3 - fonts.lineHeight()) * 0.5f, w - em * 2,
+	gfx::line(renderer, {offset + em * 0.75f, plus}, {offset + w - em * 0.75f, plus}, text::palette::border);
+	label(engine, collapsed ? "+" : "+  New tab", offset + em, plus + (em * 3 - fonts.lineHeight()) * 0.5f, w - em * 2,
 	      {.color = text::palette::muted});
 	return animating;
 }
 void Sidebar::paintTooltip(SDL_Renderer& renderer, text::Engine& engine, const text::Fonts& fonts,
-                           std::span<const std::unique_ptr<Tab>> tabs, float outputWidth, float outputHeight) const {
-	if (!hovered || *hovered >= tabs.size() || SDL_GetTicks() < hoverSince + 650)
+                           std::span<const std::unique_ptr<Tab>> tabs, float outputWidth, float outputHeight,
+                           bool moving) const {
+	if (moving || !hovered || *hovered >= tabs.size() || SDL_GetTicks() < hoverSince + 650)
 		return;
 	const auto& path = tabs[*hovered]->cwd;
 	const float em = fonts.size();
@@ -321,7 +343,7 @@ void Sidebar::paintTooltip(SDL_Renderer& renderer, text::Engine& engine, const t
 	const float w = std::min(outputWidth - em * 2, fonts.width(text::FontId::Ui, path) + em * 1.5f);
 	const auto layout = engine.layout(runs, {.width = std::max(1.0f, w - em * 1.5f)});
 	const float h = layout.height + em,
-	            x = std::clamp(width(fonts) + em * 0.5f, em, std::max(em, outputWidth - w - em));
+	            x = std::clamp(targetWidth(fonts) + em * 0.5f, em, std::max(em, outputWidth - w - em));
 	const float y = std::clamp(pointerY + em, em, std::max(em, outputHeight - h - em));
 	gfx::rounded(renderer, {x, y, w, h}, em * 0.4f, text::palette::surface2);
 	gfx::roundedBorder(renderer, {x, y, w, h}, em * 0.4f, text::palette::border);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/tsp.h"
+#include "gfx/tween.h"
 #include "text/inline_layout.h"
 #include "view/hit_targets.h"
 #include <array>
@@ -54,9 +55,11 @@ struct PickerCache {
 	std::vector<PickerRow> rows;
 	std::vector<PickerColumn> columns;
 	std::array<double, 8> catalogueStamps{};
-	std::string selected, confirmAct;
+	std::string selected, confirmAct, shownFocus, shownScope;
 	float scroll = 0, scopesScroll = 0, previewScroll = 0;
+	gfx::Tween scrollTween, scopesScrollTween, previewScrollTween;
 	float scrollMax = 0, scopesMax = 0, previewMax = 0, contentHeight = 0, scopesHeight = 0;
+	float selectedTop = -1, selectedHeight = 0;
 	float width = -1, height = -1, fontSize = 0, minimumHeight = 0;
 	SDL_FRect head{}, closeBox{}, queryBox{}, tabsBox{}, columnsBox{}, scopesBox{}, listBox{}, previewBox{}, stripBox{},
 	    stripContent{}, confirmBox{}, confirmButton{}, actionBox{}, painted{};
@@ -64,6 +67,7 @@ struct PickerCache {
 	size_t shown = 0, children = 0;
 	int nextWake = -1;
 	bool side = false, hasQuery = false, ready = false;
+	bool revealSelection = true, transitioning = false;
 };
 
 void syncPicker(const tsp::Node& node, PickerCache& cache, text::Engine& engine, const text::Fonts& fonts);

@@ -50,6 +50,7 @@ public:
 		                                        .caret = caret});
 		item.rect = rect;
 		item.body = body;
+		item.popup = popupMode;
 		const float height = item.layout.height;
 		if (caret && item.layout.caret) {
 			cache.caret = SDL_FRect{rect.x + item.layout.caret->x, rect.y + item.layout.caret->y + unit * 2, unit * 2,
@@ -60,11 +61,11 @@ public:
 		return height;
 	}
 	void shape(SDL_FRect rect, SDL_Color color, float radius = 0, bool border = false, bool body = true) {
-		cache.shapes.push_back({rect, color, radius, border, body});
+		cache.shapes.push_back({rect, color, radius, border, body, popupMode});
 	}
 	void target(SDL_FRect rect, view::TargetKind kind, std::string item = {}, std::optional<json> value = {},
 	            bool body = true) {
-		cache.targets.push_back({rect, kind, std::move(item), std::move(value), body});
+		cache.targets.push_back({rect, kind, std::move(item), std::move(value), body, popupMode});
 	}
 	void button(const json& value, SDL_FRect rect, bool on, bool off, view::TargetKind kind, const std::string& item,
 	            std::optional<json> payload = {}, text::FontId font = text::FontId::Ui) {
@@ -113,7 +114,75 @@ public:
 			return std::min(maximum, fonts.width(text::FontId::Ui, control.value("label", "Run")) + padding * 2);
 		return maximum;
 	}
-	float control(const json& row, const json& editing, SDL_FRect rect, float labelBottom) {
+	// The open choice's options as a floating menu at `anchor` (see PrefsPopup): as wide as the
+	// widest option (at least the pill, at most the sheet), each option's detail wrapped under it.
+	void menu(const json& options, const json& selected, const std::string& id, text::FontId font, bool off,
+	          SDL_FRect anchor) {
+		const float padding = em * gfx::space::md, inset = em * gfx::space::xs, gap = em * gfx::space::sm;
+		const float h = pitch + inset * 2;
+		float natural = 0;
+		bool details = false;
+		for (const auto& option : options) {
+			natural = std::max(natural, fonts.width(font, option.value("label", stringValue(option.at("value")))));
+			details |= option.contains("detail");
+		}
+		const float most = std::max(1.0f, cache.width - em * gfx::space::lg * 2);
+		const float width =
+		    std::clamp(std::max(natural + padding * 2 + inset * 2, details ? em * 16 : 0.0f), anchor.w, most);
+		auto& popup = cache.popup;
+		if (popup.row != id) {
+			popup = {.row = id};
+			// A popup already present in the first scene must paint its final replay pixels.
+			popup.opening.snap(cache.painted ? 0.0f : 1.0f);
+			popup.opening.to(1, SDL_GetTicks(), 140);
+		}
+		popup.anchor = anchor;
+		popup.width = width;
+		const auto option = stringValue(selected);
+		if (popup.selected != option) {
+			popup.selected = option;
+			popup.revealSelection = true;
+		}
+		popup.selectedTop = popup.selectedHeight = 0;
+		popupMode = true;
+		const auto backgroundAt = cache.shapes.size();
+		shape({0, 0, width, 0}, card, em * .45f);
+		float y = inset;
+		for (size_t i = 0; i < options.size(); ++i) {
+			const auto& option = options[i];
+			const auto optionId = stringValue(option.at("value"));
+			const bool on = selected == option.at("value") || selected == json(i);
+			SDL_FRect optionRect{inset, y, width - inset * 2, h};
+			const auto highlightAt = cache.shapes.size();
+			shape(optionRect, on ? text::palette::surface2 : card, em * .3f);
+			label(option.value("label", optionId),
+			      {inset + padding, y + inset, std::max(1.0f, optionRect.w - padding * 2), pitch},
+			      on ? text::palette::accent : text::palette::fg, font, true, 1);
+			if (option.contains("detail"))
+				optionRect.h +=
+				    gap
+				    + label(option.at("detail"),
+				            {inset + padding, y + inset + pitch + gap, std::max(1.0f, optionRect.w - padding * 2), 0},
+				            text::palette::muted)
+				    + inset;
+			cache.shapes[highlightAt].rect = optionRect;
+			if (on) {
+				popup.selectedTop = optionRect.y;
+				popup.selectedHeight = optionRect.h;
+			}
+			if (!off)
+				target(optionRect, view::TargetKind::Select, id + "=" + optionId,
+				       json{{"item", id}, {"value", option.at("value")}});
+			y += optionRect.h;
+		}
+		popup.height = y + inset;
+		cache.shapes[backgroundAt].rect.h = popup.height;
+		shape({0, 0, width, popup.height}, text::palette::border, em * .45f, true);
+		popupMode = false;
+		// The body scrolls to keep the pill (not the menu, which places itself) in view.
+		cache.optionRect = anchor;
+	}
+	float control(const json& row, const json& editing, SDL_FRect rect) {
 		const auto& control = row.at("control");
 		const auto kind = control.value("k", "");
 		const auto id = row.value("id", "");
@@ -167,39 +236,13 @@ public:
 				      font, true, 1);
 				label("⌄", {pill.x + width - padding - em, pill.y + inset, em, pitch}, text::palette::muted,
 				      text::FontId::Ui, true, 1);
-				if (!off)
+				if (!off) {
 					target(pill, view::TargetKind::Activate, id);
-			}
-			if (active && !editing.value("option", json{}).is_null()) {
-				float y = std::max(controlBottom, labelBottom) + gap;
-				const float left = em * gfx::space::lg * 2;
-				for (size_t i = 0; i < options.size(); ++i) {
-					const auto& option = options[i];
-					SDL_FRect optionRect{left, y, std::max(1.0f, cache.width - left * 2), h};
-					const auto optionId = stringValue(option.at("value"));
-					const auto selected = editing.at("option");
-					const bool on = selected == option.at("value") || selected == json(i);
-					label(option.value("label", optionId),
-					      {left + padding, y + inset, std::max(1.0f, optionRect.w - padding * 2), pitch},
-					      on ? text::palette::accent : color, font, true, 1);
-					if (option.contains("detail"))
-						optionRect.h += gap
-						              + label(option.at("detail"),
-						                      {left + padding, y + inset + pitch + gap,
-						                       std::max(1.0f, optionRect.w - padding * 2), 0},
-						                      text::palette::muted);
-					shape(optionRect, on ? text::palette::surface2 : card, em * .3f);
-					if (on)
-						cache.optionRect = optionRect;
-					if (!off)
-						target(optionRect, view::TargetKind::Select, id + "=" + optionId,
-						       json{{"item", id}, {"value", option.at("value")}});
-					y += optionRect.h;
-					if (i + 1 < options.size())
-						y += gap;
+					cache.targets.back().pill = true;
 				}
-				return y - rect.y;
 			}
+			if (active && !editing.value("option", json{}).is_null())
+				menu(options, editing.at("option"), id, font, off, {rect.x, rect.y, rect.w, controlBottom - rect.y});
 			return controlBottom - rect.y;
 		} else if (kind == "number") {
 			const double value =
@@ -313,6 +356,7 @@ public:
 	text::Engine& engine;
 	const text::Fonts& fonts;
 	float em, unit, pitch;
+	bool popupMode = false;
 };
 
 void rebuild(const tsp::Node& node, PrefsCache& cache, text::Engine& engine, const text::Fonts& fonts, float width) {
@@ -323,6 +367,7 @@ void rebuild(const tsp::Node& node, PrefsCache& cache, text::Engine& engine, con
 	cache.previewBox = {};
 	cache.focusedRect = {};
 	cache.optionRect = {};
+	cache.popup.height = 0; // Rebuilt by an open choice; its scroll survives while it stays open.
 	cache.width = width;
 	Builder b(cache, engine, fonts);
 	const float em = b.em, pitch = b.pitch, pad = em * gfx::space::lg;
@@ -472,10 +517,9 @@ void rebuild(const tsp::Node& node, PrefsCache& cache, text::Engine& engine, con
 				}
 				if (hasControl)
 					bottom = std::max(
-					    bottom,
-					    textTop
-					        + b.control(row, node.prop("editing"),
-					                    {pad + inner - controlWidth - rowInset, textTop, controlWidth, pitch}, bottom));
+					    bottom, textTop
+					                + b.control(row, node.prop("editing"),
+					                            {pad + inner - controlWidth - rowInset, textTop, controlWidth, pitch}));
 				y = bottom + rowInset;
 				cache.shapes[shapeAt].rect.h = y - top;
 				cache.targets[hitAt].rect.h = y - top;
@@ -497,6 +541,8 @@ void rebuild(const tsp::Node& node, PrefsCache& cache, text::Engine& engine, con
 			y += pad;
 		}
 	cache.bodyHeight = y;
+	if (cache.popup.height == 0)
+		cache.popup = {};
 }
 } // namespace
 
@@ -505,16 +551,24 @@ void syncPrefs(const tsp::Node& node, PrefsCache& cache, text::Engine&) {
 	if (cache.page != node.str("page")) {
 		cache.page = node.str("page");
 		cache.scroll = 0;
+		cache.scrollTween.snap(0);
 	}
-	if (cache.shownFocus != node.str("focus")) {
+	const bool focusChanged = cache.shownFocus != node.str("focus");
+	if (focusChanged) {
 		cache.shownFocus = node.str("focus");
 		cache.revealFocus = !cache.shownFocus.empty();
 	}
 	const auto& editing = node.prop("editing");
 	const auto option = editing.is_object() ? stringValue(editing.value("option", json{})) : std::string{};
-	if (option != cache.shownOption) {
+	const bool optionChanged = option != cache.shownOption;
+	if (optionChanged) {
 		cache.shownOption = option;
 		cache.revealFocus |= !option.empty();
+		cache.popup.revealSelection = true;
+	}
+	if (focusChanged || optionChanged) {
+		cache.scroll = cache.scrollTween.value(SDL_GetTicks());
+		cache.scrollTween.snap(cache.scroll);
 	}
 }
 SDL_FPoint measurePrefs(const tsp::Node& node, PrefsCache& cache, text::Engine& engine, const text::Fonts& fonts,
@@ -527,21 +581,28 @@ std::optional<SDL_FRect> paintPrefs(const tsp::Node& node, PrefsCache& cache, te
                                     const text::Fonts& fonts, SDL_Renderer& renderer, const SDL_FRect& rect,
                                     bool focused, view::HitTargets& hits) {
 	measurePrefs(node, cache, engine, fonts, rect.w);
+	const auto now = SDL_GetTicks();
 	const float unit = fonts.size() / 15;
 	gfx::fill(renderer, rect, sheet);
 	gfx::line(renderer, {rect.x, rect.y}, {rect.x, rect.y + rect.h}, text::palette::border, unit);
 	cache.bodyRect = {rect.x, rect.y + cache.headerHeight, rect.w, std::max(0.0f, rect.h - cache.headerHeight)};
 	cache.viewportHeight = cache.bodyRect.h;
 	cache.scrollMax = std::max(0.0f, cache.bodyHeight - cache.viewportHeight);
+	const float destination = std::clamp(cache.scrollTween.target(), 0.0f, cache.scrollMax);
+	if (destination != cache.scrollTween.target())
+		cache.scrollTween.snap(destination);
+	cache.scroll = std::clamp(cache.scrollTween.value(now), 0.0f, cache.scrollMax);
 	if (cache.revealFocus) {
 		const auto& focus = cache.optionRect.h > 0 ? cache.optionRect : cache.focusedRect;
 		if (focus.y < cache.scroll)
 			cache.scroll = focus.y;
 		else if (focus.y + focus.h > cache.scroll + cache.viewportHeight)
 			cache.scroll = focus.y + focus.h - cache.viewportHeight;
+		cache.scroll = std::clamp(cache.scroll, 0.0f, cache.scrollMax);
+		cache.scrollTween.snap(cache.scroll);
 		cache.revealFocus = false;
 	}
-	cache.scroll = std::clamp(cache.scroll, 0.0f, cache.scrollMax);
+	cache.transitioning = cache.scrollTween.active(now);
 	gfx::ScopedClip outerClip(renderer, rect);
 	hits.add(rect, view::TargetKind::Focus);
 	for (const bool body : {false, true}) {
@@ -549,7 +610,7 @@ std::optional<SDL_FRect> paintPrefs(const tsp::Node& node, PrefsCache& cache, te
 		gfx::ScopedClip bodyClip(renderer, clip);
 		const float y = body ? cache.bodyRect.y - cache.scroll : rect.y;
 		for (const auto& shape : cache.shapes)
-			if (shape.body == body) {
+			if (shape.body == body && !shape.popup) {
 				const auto box = moved(shape.rect, rect.x, y);
 				if (!gfx::intersects(box, clip))
 					continue;
@@ -559,13 +620,13 @@ std::optional<SDL_FRect> paintPrefs(const tsp::Node& node, PrefsCache& cache, te
 					gfx::rounded(renderer, box, shape.radius, shape.color);
 			}
 		for (const auto& item : cache.texts)
-			if (item.body == body) {
+			if (item.body == body && !item.popup) {
 				const auto box = moved({item.rect.x, item.rect.y, item.rect.w, item.layout.height}, rect.x, y);
 				if (gfx::intersects(box, clip))
 					engine.draw(item.runs, item.layout, box.x, box.y);
 			}
 		for (const auto& target : cache.targets)
-			if (target.body == body) {
+			if (target.body == body && !target.popup) {
 				const auto box = gfx::intersect(moved(target.rect, rect.x, y), clip);
 				hits.add(box, target.kind, target.item, 0, target.value);
 			}
@@ -583,16 +644,96 @@ std::optional<SDL_FRect> paintPrefs(const tsp::Node& node, PrefsCache& cache, te
 		              cache.bodyRect.y + (cache.viewportHeight - h) * cache.scroll / cache.scrollMax, unit * 2, h},
 		             unit, text::palette::dim);
 	}
+	auto& popup = cache.popup;
+	popup.rect = {};
+	if (popup.height > 0) {
+		// Below the pill when it fits (or has the most room), else above; within the body.
+		const auto anchor = moved(popup.anchor, rect.x, cache.bodyRect.y - cache.scroll);
+		const float gap = unit * 4, top = cache.bodyRect.y + gap, bottom = cache.bodyRect.y + cache.bodyRect.h - gap;
+		const float below = bottom - (anchor.y + anchor.h + gap), above = anchor.y - gap - top;
+		const bool down = below >= popup.height || below >= above;
+		const float h = std::max(0.0f, std::min(popup.height, down ? below : above));
+		const float x = std::clamp(anchor.x + anchor.w - popup.width, rect.x + gap,
+		                           std::max(rect.x + gap, rect.x + rect.w - popup.width - gap));
+		SDL_FRect frame{x, down ? anchor.y + anchor.h + gap : anchor.y - gap - h, popup.width, h};
+		// Selection and viewport changes reveal immediately; wheel destinations survive ordinary rebuilds.
+		if (popup.revealSelection || popup.viewportHeight != h) {
+			popup.scroll = popup.scrollTween.value(now);
+			const float least = std::min(popup.selectedTop, popup.selectedTop + popup.selectedHeight - h);
+			popup.scroll = std::clamp(popup.scroll, least, popup.selectedTop);
+			popup.scroll = std::clamp(popup.scroll, 0.0f, std::max(0.0f, popup.height - h));
+			popup.scrollTween.snap(popup.scroll);
+			popup.revealSelection = false;
+		}
+		popup.viewportHeight = h;
+		const float menuDestination = std::clamp(popup.scrollTween.target(), 0.0f, std::max(0.0f, popup.height - h));
+		if (menuDestination != popup.scrollTween.target())
+			popup.scrollTween.snap(menuDestination);
+		popup.scroll = popup.scrollTween.value(now);
+		const float opening = popup.opening.value(now), visibleHeight = h * opening;
+		const SDL_FRect reveal{x, down ? frame.y : frame.y + h - visibleHeight, popup.width, visibleHeight};
+		frame.y += (down ? -1 : 1) * unit * 6 * (1 - opening);
+		popup.rect = gfx::intersect(gfx::intersect(frame, reveal), cache.bodyRect);
+		cache.transitioning |= popup.scrollTween.active(now) || popup.opening.active(now);
+		// A click anywhere else on the sheet closes the menu, but another pill opens its own.
+		hits.add(rect, view::TargetKind::Action, "close", 0, json(popup.row));
+		for (const auto& target : cache.targets)
+			if (target.pill)
+				hits.add(gfx::intersect(moved(target.rect, rect.x, cache.bodyRect.y - cache.scroll), cache.bodyRect),
+				         target.kind, target.item, 0, target.value);
+		gfx::ScopedClip popupBodyClip(renderer, cache.bodyRect);
+		if (popup.rect.h > 0)
+			for (int i = 3; i >= 1; --i) {
+				const float spread = unit * 3 * static_cast<float>(i);
+				gfx::rounded(
+				    renderer,
+				    {x - spread, popup.rect.y - spread + unit * 2, popup.width + spread * 2, popup.rect.h + spread * 2},
+				    fonts.size() * .45f + spread, text::rgb(0, static_cast<Uint8>(22 / i)));
+			}
+		gfx::ScopedClip menuClip(renderer, popup.rect);
+		const float y = frame.y - popup.scroll;
+		for (const auto& shape : cache.shapes)
+			if (shape.popup) {
+				auto box = moved(shape.rect, x, y);
+				// The frame spans the visible part, so its rounded corners stay in view.
+				if (shape.rect.y == 0 && shape.rect.h == popup.height)
+					box = frame;
+				if (shape.border)
+					gfx::roundedBorder(renderer, box, shape.radius, shape.color, unit);
+				else
+					gfx::rounded(renderer, box, shape.radius, shape.color);
+			}
+		for (const auto& item : cache.texts)
+			if (item.popup) {
+				const auto box = moved({item.rect.x, item.rect.y, item.rect.w, item.layout.height}, x, y);
+				if (gfx::intersects(box, popup.rect))
+					engine.draw(item.runs, item.layout, box.x, box.y);
+			}
+		for (const auto& target : cache.targets)
+			if (target.popup)
+				hits.add(gfx::intersect(moved(target.rect, x, y), popup.rect), target.kind, target.item, 0,
+				         target.value);
+	}
+	cache.painted = true;
 	return caret;
 }
 bool scrollPrefs(PrefsCache& cache, float x, float y, float delta) {
+	if (contains(cache.popup.rect, x, y)) {
+		auto& popup = cache.popup;
+		popup.scrollTween.to(
+		    std::clamp(popup.scrollTween.target() + delta, 0.0f, std::max(0.0f, popup.height - popup.viewportHeight)),
+		    SDL_GetTicks());
+		return true;
+	}
 	if (!contains(cache.bodyRect, x, y))
 		return false;
-	cache.scroll = std::clamp(cache.scroll + delta, 0.0f, cache.scrollMax);
+	cache.scrollTween.to(std::clamp(cache.scrollTween.target() + delta, 0.0f, cache.scrollMax), SDL_GetTicks());
 	return true;
 }
 double dragPrefsNumber(PrefsCache& cache, std::string_view item, const json& control, const SDL_FRect& track,
                        float startX, float x, float scale) {
+	cache.scroll = cache.scrollTween.value(SDL_GetTicks());
+	cache.scrollTween.snap(cache.scroll);
 	const double step = control.value("step", 1.0);
 	const bool slider = control.contains("min") && control.contains("max");
 	const double minimum = control.value("min", 0.0);
