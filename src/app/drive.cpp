@@ -328,16 +328,25 @@ bool Drive::tick(bool& running) {
 				if (!file)
 					fail("Cannot write " + arg);
 			}
-		} else if (command == "drop") {
-			valid = !arg.empty();
+		} else if (command == "drop" || command == "dropover" || command == "dropend") {
+			valid = command == "dropend" || !arg.empty();
+			if (valid && command == "dropover")
+				valid = static_cast<bool>(values >> dropX_ >> dropY_);
 			if (valid && !eventHandler_)
 				fail("drop needs omp-ui");
 			else if (valid) {
 				SDL_Event event{};
-				event.type = SDL_EVENT_DROP_FILE;
+				event.type = command == "drop"     ? SDL_EVENT_DROP_FILE
+				           : command == "dropover" ? SDL_EVENT_DROP_POSITION
+				                                   : SDL_EVENT_DROP_COMPLETE;
 				event.drop.windowID = SDL_GetWindowID(&window_.get());
-				event.drop.data = arg.c_str();
+				event.drop.x = dropX_;
+				event.drop.y = dropY_;
+				if (command == "drop")
+					event.drop.data = arg.c_str();
 				eventHandler_(event);
+				if (command == "dropend")
+					dropX_ = dropY_ = 0;
 			}
 		} else if (command == "tab" || command == "tabbg" || command == "tabcmd" || command == "tabs"
 		           || command == "window" || command == "newwindow" || command == "merge" || command == "tabdrag"

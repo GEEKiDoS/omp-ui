@@ -21,6 +21,14 @@ omp-ui [folder] -- omp [args...]
 
 The command can run omp on another machine over ssh: `omp-ui -- ssh -t host omp` (omp and bun must be on the PATH of ssh's non-interactive shell there). Dropped files paste local paths, which a remote omp can't open.
 
+Drag folders and files onto a window: while a session is running, dropping in the upper half opens a dropped folder in a new tab, and dropping in the lower half pastes the paths into the prompt (files always paste). The zones light up while you drag. A window without a running session opens dropped folders anywhere.
+
+On Windows, `explorer-menu.ps1` (beside `omp-ui.exe`) adds "Open with OMP-UI" to Explorer's right-click menu on folders, for your user only (no administrator rights); on Windows 11 it is under "Show more options". Run it again after moving omp-ui, and pass `-Uninstall` to remove it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File explorer-menu.ps1
+```
+
 From there, use `omp` as usual.
 
 ### Shortcuts

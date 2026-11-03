@@ -234,6 +234,8 @@ void sync(const tsp::Node& node, LeafCache& cache, text::Engine& engine, const t
 		base.font = text::FontId::Bold;
 	} else if (node.str("role") == "omp.welcome.version")
 		base = style(text::palette::dim, text::FontId::Mono);
+	else if (node.str("role") == "omp.hook-editor.eyebrow") // "Custom answer" above the question
+		base = style(text::palette::muted);
 	const auto wrap = node.str("wrap", "word"), truncate = node.str("truncate", "end");
 	cache.options.width = naturalLimit;
 	cache.options.wrap = wrap == "none" ? text::Wrap::None : wrap == "char" ? text::Wrap::Char : text::Wrap::Word;

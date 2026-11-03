@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- omp-ui: omp's π mark in front of an app window. Coordinates sit on a 2-unit grid, so edges
+       land on whole pixels at 16, 32, 48, 64 and 256 px. -->
+  <defs>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7aa2f7"/>
+      <stop offset="1" stop-color="#bb9af7"/>
+    </linearGradient>
+    <clipPath id="window">
+      <rect x="10" y="2" width="20" height="20" rx="4"/>
+    </clipPath>
+  </defs>
+  <!-- The window: dark body, accent title bar, a 2-unit edge. -->
+  <g clip-path="url(#window)">
+    <rect x="10" y="2" width="20" height="20" fill="#565d70"/>
+    <rect x="12" y="4" width="16" height="16" rx="2" fill="#1e2129"/>
+    <rect x="10" y="2" width="20" height="6" fill="url(#bar)"/>
+  </g>
+  <!-- omp's mark (as on its welcome screen): the bar, a short left leg, a longer right leg. Drawn
+       twice: a background-coloured outline that cuts it out of the window, then white. -->
+  <g fill="#17191f" stroke="#17191f" stroke-width="4" stroke-linejoin="round">
+    <rect x="2" y="10" width="20" height="4"/>
+    <rect x="6" y="14" width="4" height="10"/>
+    <rect x="14" y="14" width="4" height="14"/>
+  </g>
+  <g fill="#ffffff">
+    <rect x="2" y="10" width="20" height="4"/>
+    <rect x="6" y="14" width="4" height="10"/>
+    <rect x="14" y="14" width="4" height="14"/>
+  </g>
+</svg>

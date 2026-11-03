@@ -1,0 +1,4 @@
+// The app icon: the exe's in Explorer and, as SDL registers its window class with the first icon
+// resource, the window's, the taskbar's and the notifications'. omp-ui.ico is rendered from
+// omp-ui.svg (16 to 256 px).
+1 ICON "omp-ui.ico"

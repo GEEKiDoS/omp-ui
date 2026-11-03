@@ -559,6 +559,12 @@ void Tree::sync(tsp::NodeId id) {
 	} else if (role == "omp.assistant" && node.prop("gap").is_null()) {
 		// Thinking sections, text and tool rows of one reply; without a gap folded thoughts touch.
 		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::sm);
+	} else if (role == "omp.overlay.hook-editor" && node.prop("gap").is_null()) {
+		// omp's custom-answer / note prompt takes the composer's place and leaves its look to the
+		// role: spaced like the ask sheet it opens from, the head over a hairline (painted below).
+		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::md);
+	} else if (role == "omp.hook-editor.head") {
+		YGNodeStyleSetPadding(yoga, YGEdgeBottom, em * gfx::space::md);
 	} else if (role == "omp.composer.stop") {
 		// Painted as a round stop button the size of the send button it replaces (kinds/inline.cpp).
 		const float side = std::max(em * 2.2f, pitch + em * gfx::space::xs * 2);
@@ -1155,6 +1161,9 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		const float x = std::round(rect.x - em * gfx::space::xl * 0.5f);
 		gfx::fill(renderer, {x, rect.y, std::max(1.0f, scale), rect.h}, text::palette::border);
 	}
+	if (node.str("role") == "omp.hook-editor.head")
+		gfx::fill(renderer, {rect.x, rect.y + rect.h - std::max(1.0f, scale), rect.w, std::max(1.0f, scale)},
+		          text::palette::border);
 	bool animating = false;
 	if (node.kind == tsp::Kind::Card && !view.frameless) {
 		gfx::rounded(renderer, rect, 11 * scale, kinds::cardFill(node));

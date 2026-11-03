@@ -151,11 +151,17 @@ struct Window {
 	std::string notice;
 	std::optional<SidebarMenu> menu;
 	std::optional<app::SidebarHit> sidebarPress;
+	// Where an OS drag (files or folders from Explorer) is over the window, in output pixels: the
+	// drop zones show until it drops or leaves.
+	std::optional<SDL_FPoint> dragOver;
 	std::optional<Uint64> switchStarted;
 	double lastSwitchMs = 0;
 	uint64_t switchCount = 0, paintCount = 0, frontOrder = 0;
 	SDL_WindowID id() const { return SDL_GetWindowID(window.get()); }
 };
+// Where a dropped folder or file goes: with a prompt to paste into, a window's upper half opens
+// folders as new tabs and its lower half pastes paths; without one, everywhere opens tabs.
+enum class DropZone { NewTab, Paste };
 struct FolderReply {
 	SDL_WindowID window;
 	std::optional<std::string> path;
@@ -596,15 +602,45 @@ int main(int argc, char* argv[]) {
 		window.sidebar.reveal(window.active, fonts, static_cast<float>(window.outputH), window.tabs.size());
 		window.dirty = true;
 	};
-	// A dropped folder opens a session there; a dropped file pastes its path into the prompt,
-	// quoted when it has spaces, with a separating space for multi-file drops.
-	auto dropped = [&](Window& window, const std::string& path) {
+	auto canPaste = [](const Window& window) {
+		return !window.tabs.empty() && !window.tabs[window.active]->exited;
+	};
+	auto dropZone = [&](const Window& window, float y) {
+		return canPaste(window) && y >= window.content.y + window.content.h * 0.5f ? DropZone::Paste : DropZone::NewTab;
+	};
+	// A dropped folder in the new-tab zone opens a session there; anything else pastes its path into
+	// the prompt, quoted when it has spaces, with a separating space for multi-file drops.
+	auto dropped = [&](Window& window, const std::string& path, DropZone zone) {
 		std::error_code error;
-		if (std::filesystem::is_directory(text::utf8Path(path), error))
+		if (zone == DropZone::NewTab && std::filesystem::is_directory(text::utf8Path(path), error))
 			addTab(window, path, command, true);
-		else if (!window.tabs.empty() && !window.tabs[window.active]->exited)
+		else if (canPaste(window))
 			window.input->paste((path.find(' ') == std::string::npos ? path : "\"" + path + "\"") + " ");
 		window.dirty = true;
+	};
+	// SDL's drop events: positions while an OS drag is over the window (`DROP_BEGIN` has none), the
+	// dropped paths at the last position, then `DROP_COMPLETE` (also when the drag leaves).
+	auto dropEvent = [&](Window& window, const SDL_Event& event, float scaleX, float scaleY) {
+		const SDL_FPoint at{event.drop.x * scaleX, event.drop.y * scaleY};
+		switch (event.type) {
+		case SDL_EVENT_DROP_POSITION:
+			if (!window.dragOver || dropZone(window, window.dragOver->y) != dropZone(window, at.y))
+				window.dirty = true;
+			window.dragOver = at;
+			return true;
+		case SDL_EVENT_DROP_FILE:
+			if (event.drop.data)
+				dropped(window, event.drop.data, dropZone(window, at.y));
+			return true;
+		case SDL_EVENT_DROP_COMPLETE:
+			window.dragOver.reset();
+			window.dirty = true;
+			return true;
+		case SDL_EVENT_DROP_BEGIN:
+			return true;
+		default:
+			return false;
+		}
 	};
 	auto selectTab = [&](Window& window, size_t index) {
 		if (index >= window.tabs.size() || index == window.active)
@@ -1325,6 +1361,37 @@ int main(int argc, char* argv[]) {
 				          text::palette::accent, 2 * scale);
 			}
 		}
+		if (window.dragOver) {
+			// An OS drag over the window: its drop zones, the one a drop would use lit (see dropZone).
+			const float em = fonts.size(), width = static_cast<float>(window.outputW);
+			gfx::fill(*window.renderer, {0, 0, width, static_cast<float>(window.outputH)},
+			          text::withAlpha(text::palette::bg, 200));
+			const auto active = dropZone(window, window.dragOver->y);
+			auto zone = [&](float top, float bottom, DropZone kind, std::string title, std::string detail) {
+				const SDL_FRect box{em, top + em * 0.5f, width - em * 2, bottom - top - em};
+				const bool lit = kind == active;
+				// Nearly opaque, so the transcript behind doesn't run into the labels.
+				gfx::rounded(*window.renderer, box, em * 0.8f, text::withAlpha(text::palette::surface, 235));
+				if (lit)
+					gfx::rounded(*window.renderer, box, em * 0.8f, text::withAlpha(text::palette::accent, 36));
+				gfx::roundedBorder(*window.renderer, box, em * 0.8f,
+				                   lit ? text::palette::accent : text::palette::border, lit ? 2 * scale : scale);
+				const float titleWidth = fonts.width(text::FontId::Bold, title),
+				            detailWidth = fonts.width(text::FontId::Ui, detail);
+				const float y = box.y + (box.h - pitch * 2.2f) * 0.5f;
+				label(window, std::move(title), box.x + (box.w - titleWidth) * 0.5f, y, titleWidth + 1,
+				      {.font = text::FontId::Bold, .color = lit ? text::palette::fg : text::palette::muted});
+				label(window, std::move(detail), box.x + (box.w - detailWidth) * 0.5f, y + pitch * 1.2f,
+				      detailWidth + 1, {.color = lit ? text::palette::muted : text::palette::dim});
+			};
+			const float top = window.content.y, middle = window.content.y + window.content.h * 0.5f,
+			            bottom = static_cast<float>(window.outputH);
+			if (canPaste(window)) {
+				zone(top, middle, DropZone::NewTab, "Open in a new tab", "A folder starts a new session there");
+				zone(middle, bottom, DropZone::Paste, "Paste path", "Into this tab's prompt");
+			} else
+				zone(top, bottom, DropZone::NewTab, "Open in a new tab", "A folder starts a new session there");
+		}
 		return animated;
 	};
 	// Shows the window. While something animates (spinners, shimmer, timers) the frame is kept
@@ -1450,10 +1517,8 @@ int main(int argc, char* argv[]) {
 		    *window.input);
 		drive->setEventHandler([&](const SDL_Event& event) {
 			const auto found = findWindow(targetWindow);
-			if (found && event.type == SDL_EVENT_DROP_FILE) {
-				dropped(found->get(), event.drop.data);
+			if (found && dropEvent(found->get(), event, 1, 1))
 				return true;
-			}
 			return found ? pointerEvent(found->get(), event, 1, 1) : true;
 		});
 		drive->setTabAction([&](std::string_view action, std::string_view argument) -> std::string {
@@ -1685,6 +1750,7 @@ int main(int argc, char* argv[]) {
 				case SDL_EVENT_MOUSE_MOTION:
 				case SDL_EVENT_MOUSE_BUTTON_DOWN:
 				case SDL_EVENT_MOUSE_WHEEL:
+				case SDL_EVENT_DROP_POSITION:
 				case SDL_EVENT_DROP_FILE:
 					window.lastInput = SDL_GetTicks();
 					if (window.dimmedAt) {
@@ -1708,10 +1774,8 @@ int main(int argc, char* argv[]) {
 						break;
 					continue;
 				}
-				if (event.type == SDL_EVENT_DROP_FILE && event.drop.data) {
-					dropped(window, event.drop.data);
+				if (dropEvent(window, event, window.toOutputX, window.toOutputY))
 					continue;
-				}
 				if (pointerEvent(window, event, window.toOutputX, window.toOutputY)) {
 					if (!running)
 						break;

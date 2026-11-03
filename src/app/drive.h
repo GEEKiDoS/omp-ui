@@ -6,7 +6,8 @@
 // wait ms | waitfor timeout-ms regex | text UTF-8 | key ctrl+c / enter+shift
 // paste UTF-8 | move/click/dblclick/rclick/mclick x y | drag x1 y1 x2 y2 (left press, move, release)
 // down x y | up x y hold/release the left button across steps (for mid-drag captures).
-// wheel x y lines | resize w h | drop path (omp-ui: a folder or file dropped on the window)
+// wheel x y lines | resize w h | drop path (omp-ui: a folder or file dropped on the window, at
+// the last dropover point) | dropover x y (an OS drag over the window) | dropend (it dropped or left)
 // scale factor | shot file.png | log file.txt | nodes file.json | reveal node-id | quit
 // Transcript search: find UTF-8 | findopt case|regex on|off | findnext | findprev | findstate file.json.
 // preedit UTF-8 shows uncommitted IME composition in the focused local/program field.
@@ -74,6 +75,7 @@ private:
 	std::string path_, error_, pendingShot_;
 	size_t next_ = 0;
 	Uint64 deadline_ = 0;
+	float dropX_ = 0, dropY_ = 0; // The last dropover point, where SDL reports a drop.
 	std::optional<std::regex> pattern_;
 };
 } // namespace app

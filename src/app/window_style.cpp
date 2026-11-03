@@ -171,15 +171,35 @@ void notify(SDL_Window& window, bool toast, std::string_view title, std::string_
 	if (!data.hIcon)
 		data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
 	data.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
-	// Fixed-size fields: convert, then cut to fit.
+	// Fixed-size fields: convert, drop private-use characters (omp titles start with Nerd Font
+	// icons, which no system font has, so Windows shows a box) and the spaces they leave at either
+	// end, then cut to fit without splitting a surrogate pair.
 	const auto copy = [](std::string_view from, std::span<wchar_t> to) {
 		std::wstring wide(static_cast<size_t>(
 		                      MultiByteToWideChar(CP_UTF8, 0, from.data(), static_cast<int>(from.size()), nullptr, 0)),
 		                  L'\0');
 		MultiByteToWideChar(CP_UTF8, 0, from.data(), static_cast<int>(from.size()), wide.data(),
 		                    static_cast<int>(wide.size()));
-		const size_t length = std::min(wide.size(), to.size() - 1);
-		std::copy_n(wide.begin(), length, to.begin());
+		size_t kept = 0;
+		for (size_t i = 0; i < wide.size(); ++i) {
+			const wchar_t unit = wide[i];
+			if (unit >= 0xE000 && unit <= 0xF8FF)
+				continue;
+			if (unit >= 0xDB80 && unit <= 0xDBFF) { // U+F0000 and up: the supplementary private-use planes.
+				++i;
+				continue;
+			}
+			wide[kept++] = unit;
+		}
+		wide.resize(kept);
+		const auto first = wide.find_first_not_of(L' ');
+		const auto text = first == std::wstring::npos
+		                    ? std::wstring_view()
+		                    : std::wstring_view(wide).substr(first, wide.find_last_not_of(L' ') - first + 1);
+		size_t length = std::min(text.size(), to.size() - 1);
+		if (length < text.size() && length > 0 && IS_HIGH_SURROGATE(text[length - 1]))
+			--length;
+		std::copy_n(text.begin(), length, to.begin());
 		to[length] = L'\0';
 	};
 	copy(title, data.szInfoTitle);
