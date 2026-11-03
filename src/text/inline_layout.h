@@ -60,6 +60,8 @@ public:
 	// After a full paint: releases picture textures not drawn for a few seconds (scrolled away),
 	// so VRAM holds what is on screen rather than every screenshot up to the budget.
 	void trimPictures();
+	// Starts a frame: pictures drawn in it (or the one before) are never evicted for a new one.
+	void beginFrame() { ++frame_; }
 	// While set, draw() highlights the covered text and appends it to selectedText().
 	void setSelection(std::optional<Selection> selection) {
 		selection_ = selection;
@@ -113,11 +115,12 @@ private:
 		size_t id;
 		int width, height;
 		std::unique_ptr<SDL_Texture, TextureDeleter> texture;
-		Uint64 drawn = 0;
+		Uint64 drawn = 0, drawnFrame = 0;
 		size_t bytes() const { return static_cast<size_t>(width) * height * 4; }
 	};
 	std::list<Picture> pictures_; // Most recently drawn first.
 	size_t pictureBytes_ = 0;
+	Uint64 frame_ = 0;
 };
 
 } // namespace text

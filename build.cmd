@@ -14,5 +14,13 @@ if not defined VSROOT (
 	exit /b 1
 )
 call "%VSROOT%\VC\Auxiliary\Build\%VCVARS%" >nul || exit /b 1
-cmake -S "%~dp0." -B "%~dp0build" -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
-cmake --build "%~dp0build" %* || exit /b 1
+rem cl prints its /showIncludes prefix in the console code page, while the prefix ninja matches is
+rem in the ANSI code page. From a console in another code page (e.g. UTF-8, 65001) ninja records no
+rem header dependencies, and header edits then leave objects built against the old header.
+for /f "tokens=3" %%c in ('reg query HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage /v ACP') do set "ACP=%%c"
+for /f "tokens=2 delims=:." %%c in ('chcp') do set /a "CONSOLECP=%%c"
+chcp %ACP% >nul
+cmake -S "%~dp0." -B "%~dp0build" -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build "%~dp0build" %*
+set "STATUS=%ERRORLEVEL%"
+chcp %CONSOLECP% >nul
+exit /b %STATUS%

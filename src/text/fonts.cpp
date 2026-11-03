@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <span>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -53,6 +54,9 @@ bool Fonts::load(float displayScale, std::string& error) {
 		return false;
 	}
 	fallback_.push_back(std::move(nerd));
+	// Faces every chain uses as they are, ahead of the text faces: icons and colour emoji (whose
+	// glyphs SDL_ttf never restyles).
+	size_t asIs = fallback_.size();
 #ifdef _WIN32
 	std::array<wchar_t, MAX_PATH> windows{};
 	const auto length = GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()));
@@ -62,20 +66,21 @@ bool Fonts::load(float displayScale, std::string& error) {
 	}
 	const std::filesystem::path system = std::filesystem::path(windows.data()) / "Fonts";
 	fallback(system / "seguiemj.ttf");
+	asIs = fallback_.size();
 	fallback(system / "msyh.ttc");
 	fallback(system / "seguisym.ttf");
 #elif defined(__APPLE__)
 	fallback("/System/Library/Fonts/Apple Color Emoji.ttc");
+	asIs = fallback_.size();
 	fallback("/System/Library/Fonts/PingFang.ttc");
 	fallback("/System/Library/Fonts/Apple Symbols.ttf");
 #elif defined(OMP_FONTCONFIG)
 	std::unique_ptr<FcConfig, ConfigDeleter> config(FcInitLoadConfigAndFonts());
 	if (config) {
-		for (const auto name : {"emoji", "sans:lang=zh", "DejaVu Sans"}) {
-			const auto path = systemFont(*config, name);
-			if (!path.empty())
-				fallback(path);
-		}
+		fallback(systemFont(*config, "emoji"));
+		asIs = fallback_.size();
+		for (const auto name : {"sans:lang=zh", "DejaVu Sans"})
+			fallback(systemFont(*config, name));
 	}
 #endif
 	// Unhinted outlines everywhere: hinting snaps strokes to the pixel grid, which at 100 % scale
@@ -83,20 +88,49 @@ bool Fonts::load(float displayScale, std::string& error) {
 	// screens, only softer.
 	for (const auto& face : fallback_)
 		TTF_SetFontHinting(face.get(), TTF_HINTING_NONE);
-	constexpr std::array<std::string_view, 8> names = {
-	    "Inter-Regular.ttf",         "Inter-Bold.ttf",         "Inter-Italic.ttf",          "Inter-Bold.ttf",
-	    "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf", "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"};
-	for (size_t i = 0; i < names.size(); ++i) {
-		fonts_[i].reset(TTF_OpenFont((base + std::string(names[i])).c_str(), size_));
-		if (!fonts_[i]) {
+	// Bold and italic runs fall back to copies of the text faces set to synthesize that style (on
+	// the outline; see the SDL_ttf patch in cmake/deps.cmake), so CJK and symbols match the text
+	// around them. SDL_ttf skips a style the face already has.
+	static_assert(TTF_STYLE_BOLD == 1 && TTF_STYLE_ITALIC == 2);
+	for (TTF_FontStyleFlags style = TTF_STYLE_BOLD; style <= (TTF_STYLE_BOLD | TTF_STYLE_ITALIC); ++style)
+		for (const auto& face : std::span(fallback_).subspan(asIs)) {
+			Font copy(TTF_CopyFont(face.get()));
+			if (!copy) {
+				error = SDL_GetError();
+				return false;
+			}
+			TTF_SetFontStyle(copy.get(), style);
+			styled_[style - 1].push_back(std::move(copy));
+		}
+	struct Slot {
+		FontId id;
+		std::string_view file;
+		TTF_FontStyleFlags style;
+	};
+	constexpr std::array<Slot, 8> slots = {{
+	    {FontId::Ui, "Inter-Regular.ttf", TTF_STYLE_NORMAL},
+	    {FontId::Bold, "Inter-Bold.ttf", TTF_STYLE_BOLD},
+	    {FontId::Italic, "Inter-Italic.ttf", TTF_STYLE_ITALIC},
+	    {FontId::BoldItalic, "Inter-BoldItalic.ttf", TTF_STYLE_BOLD | TTF_STYLE_ITALIC},
+	    {FontId::Mono, "JetBrainsMono-Regular.ttf", TTF_STYLE_NORMAL},
+	    {FontId::MonoBold, "JetBrainsMono-Bold.ttf", TTF_STYLE_BOLD},
+	    {FontId::MonoItalic, "JetBrainsMono-Italic.ttf", TTF_STYLE_ITALIC},
+	    {FontId::MonoBoldItalic, "JetBrainsMono-BoldItalic.ttf", TTF_STYLE_BOLD | TTF_STYLE_ITALIC},
+	}};
+	for (const auto& slot : slots) {
+		auto& font = fonts_[static_cast<size_t>(slot.id)];
+		font.reset(TTF_OpenFont((base + std::string(slot.file)).c_str(), size_));
+		if (!font) {
 			error = SDL_GetError();
 			return false;
 		}
-		TTF_SetFontHinting(fonts_[i].get(), TTF_HINTING_NONE);
-		if (i == 3 || i == 6 || i == 7)
-			TTF_SetFontStyle(fonts_[i].get(), TTF_STYLE_ITALIC);
-		for (const auto& face : fallback_)
-			TTF_AddFallbackFont(fonts_[i].get(), face.get());
+		TTF_SetFontHinting(font.get(), TTF_HINTING_NONE);
+		const auto unstyled = std::span(fallback_).first(slot.style == TTF_STYLE_NORMAL ? fallback_.size() : asIs);
+		for (const auto& face : unstyled)
+			TTF_AddFallbackFont(font.get(), face.get());
+		if (slot.style != TTF_STYLE_NORMAL)
+			for (const auto& face : styled_[slot.style - 1])
+				TTF_AddFallbackFont(font.get(), face.get());
 	}
 	auto& wordmark = fonts_[static_cast<size_t>(FontId::Wordmark)];
 	wordmark.reset(TTF_OpenFont((base + "Inter-Bold.ttf").c_str(), size_ * 2));
@@ -127,6 +161,9 @@ void Fonts::setScale(float displayScale) {
 	size_ = 15 * displayScale;
 	for (const auto& face : fallback_)
 		TTF_SetFontSize(face.get(), size_);
+	for (const auto& chain : styled_)
+		for (const auto& face : chain)
+			TTF_SetFontSize(face.get(), size_);
 	for (size_t i = 0; i < fonts_.size(); ++i)
 		if (fonts_[i])
 			TTF_SetFontSize(fonts_[i].get(), size_ * (i == static_cast<size_t>(FontId::Wordmark) ? 2 : 1));

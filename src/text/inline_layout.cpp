@@ -998,10 +998,11 @@ void Engine::drawImage(const gfx::Image& image, const SDL_FRect& rect, float opa
 		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 		pictures_.push_front({image.id(), pixels.width, pixels.height, std::move(texture)});
 		pictureBytes_ += pictures_.front().bytes();
-		// Least recently drawn first; never one drawn in this frame (a screen showing more than
-		// the budget would otherwise decode its pictures again every frame).
-		const Uint64 frame = SDL_GetTicks() > 50 ? SDL_GetTicks() - 50 : 0;
-		while (pictureBytes_ > pictureBudget && pictures_.size() > 1 && pictures_.back().drawn < frame) {
+		// Least recently drawn first; never one drawn in this frame or the last. Counting frames, not
+		// milliseconds: a frame slowed by this very decode used to make the pictures drawn earlier in
+		// it look stale, so two pictures over the budget (wallpaper and a screenshot) evicted and
+		// re-decoded each other every frame.
+		while (pictureBytes_ > pictureBudget && pictures_.size() > 1 && pictures_.back().drawnFrame + 1 < frame_) {
 			pictureBytes_ -= pictures_.back().bytes();
 			pictures_.pop_back();
 		}
@@ -1009,6 +1010,7 @@ void Engine::drawImage(const gfx::Image& image, const SDL_FRect& rect, float opa
 	} else if (found != pictures_.begin())
 		pictures_.splice(pictures_.begin(), pictures_, found);
 	found->drawn = SDL_GetTicks();
+	found->drawnFrame = frame_;
 	// Premultiplied pixels fade by scaling colour and alpha together.
 	SDL_SetTextureColorModFloat(found->texture.get(), opacity, opacity, opacity);
 	SDL_SetTextureAlphaModFloat(found->texture.get(), opacity);

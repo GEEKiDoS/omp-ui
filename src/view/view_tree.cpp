@@ -1799,6 +1799,9 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 		nextWake_ = 0;
 	if (!more && !gather_)
 		transitioning_ = false;
+	// Partial repaints redraw only animated areas, so only full paints count as picture frames.
+	if (!partial && !gather_)
+		engine_.get().beginFrame();
 	lastViewport_ = viewport;
 	painted_.clear();
 	active_.reset();

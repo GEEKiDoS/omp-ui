@@ -40,8 +40,11 @@ private:
 		size_t operator()(std::string_view value) const { return std::hash<std::string_view>{}(value); }
 	};
 	using WidthCache = std::unordered_map<std::string, float, WidthHash, std::equal_to<>>;
-	// Base faces must die before the shared fallback faces they reference.
+	// Base faces must die before the fallback faces they reference. `fallback_` holds the system
+	// faces as loaded, icons and colour emoji first; `styled_[style - 1]` copies of the text faces
+	// after them, set to synthesize bold, italic, or both.
 	std::vector<Font> fallback_;
+	std::array<std::vector<Font>, 3> styled_;
 	std::array<Font, static_cast<size_t>(FontId::Count)> fonts_;
 	mutable std::array<WidthCache, static_cast<size_t>(FontId::Count)> widths_;
 	float size_ = 15;
