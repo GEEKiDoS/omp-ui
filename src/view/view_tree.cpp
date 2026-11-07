@@ -30,6 +30,8 @@ float space(std::string_view value, float em) {
 	return 0;
 }
 YGAlign align(std::string_view value, bool row) {
+	if (value == "start")
+		return YGAlignFlexStart;
 	if (value == "center")
 		return YGAlignCenter;
 	if (value == "end")
@@ -38,7 +40,7 @@ YGAlign align(std::string_view value, bool row) {
 		return YGAlignBaseline;
 	if (value == "stretch")
 		return YGAlignStretch;
-	return row ? YGAlignFlexStart : YGAlignStretch;
+	return row ? YGAlignCenter : YGAlignStretch;
 }
 bool fillsRow(const tsp::Node& node) {
 	using enum tsp::Kind;
@@ -372,6 +374,18 @@ void Tree::sync(tsp::NodeId id) {
 	if (node.kind == tsp::Kind::Image)
 		view.leaf.image = images_ && !node.str("blob").empty() ? images_(node.str("blob")) : nullptr;
 	kinds::sync(node, view.leaf, engine_.get(), fonts_, underComposer(id));
+	if ((node.kind == tsp::Kind::Json || node.kind == tsp::Kind::Tree) && view.leaf.data) {
+		bool toolOutput = false;
+		for (auto parent = node.parent; parent; parent = doc_.at(parent).parent)
+			if (doc_.at(parent).kind == tsp::Kind::Tool) {
+				toolOutput = true;
+				break;
+			}
+		if (view.leaf.data->toolOutput != toolOutput) {
+			view.leaf.data->toolOutput = toolOutput;
+			view.leaf.data->width = -1;
+		}
+	}
 	const bool row = node.kind == tsp::Kind::Row || node.kind == tsp::Kind::Status;
 	const bool inRow =
 	    node.parent && (doc_.at(node.parent).kind == tsp::Kind::Row || doc_.at(node.parent).kind == tsp::Kind::Status);
@@ -558,6 +572,10 @@ void Tree::sync(tsp::NodeId id) {
 		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::sm);
 	} else if (role == "omp.assistant" && node.prop("gap").is_null()) {
 		// Thinking sections, text and tool rows of one reply; without a gap folded thoughts touch.
+		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::sm);
+	} else if (role == "omp.error.actions") {
+		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::lg);
+	} else if (role == "omp.error.action") {
 		YGNodeStyleSetGap(yoga, YGGutterAll, em * gfx::space::sm);
 	} else if (role == "omp.overlay.hook-editor" && node.prop("gap").is_null()) {
 		// omp's custom-answer / note prompt takes the composer's place and leaves its look to the
@@ -1023,13 +1041,16 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		preview.x += sheet.x;
 		preview.y += sheet.y;
 		if (preview.w > 0 && preview.h > 0) {
+			// Yoga rounds layout widths; reuse that pixel width so a repaint cannot restore
+			// an unrounded cached root height and shift every following preview child.
+			const float width = std::max(1.0f, std::round(preview.w));
 			float contentHeight = 0;
 			for (const auto child : node.children) {
 				const auto childYoga = at(child).yoga.get();
-				YGNodeStyleSetWidth(childYoga, preview.w);
+				YGNodeStyleSetWidth(childYoga, width);
 				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
-				    || YGNodeLayoutGetWidth(childYoga) != preview.w)
-					YGNodeCalculateLayout(childYoga, preview.w, YGUndefined, YGDirectionLTR);
+				    || YGNodeLayoutGetWidth(childYoga) != width)
+					YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
 				contentHeight += YGNodeLayoutGetHeight(childYoga) + em * gfx::space::sm;
 			}
 			cache.previewMax = std::max(0.0f, contentHeight - preview.h);
@@ -1069,7 +1090,7 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		for (const auto child : node.children)
 			if (doc_.at(child).str("role") == "omp.prefs.preview.status") {
 				const auto childYoga = at(child).yoga.get();
-				const float width = std::max(1.0f, rect.w - em * 2);
+				const float width = std::max(1.0f, std::round(rect.w - em * 2));
 				YGNodeStyleSetWidth(childYoga, width);
 				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
 				    || YGNodeLayoutGetWidth(childYoga) != width)
@@ -1095,7 +1116,7 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				              cache.bodyRect.y + cache.previewBox.y - cache.scroll - YGNodeLayoutGetTop(childYoga),
 				              renderer, clips);
 			} else if (role == "omp.prefs.editor") {
-				const float width = std::max(1.0f, cache.bodyRect.w - em * 2);
+				const float width = std::max(1.0f, std::round(cache.bodyRect.w - em * 2));
 				YGNodeStyleSetWidth(childYoga, width);
 				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
 				    || YGNodeLayoutGetWidth(childYoga) != width)
@@ -1112,14 +1133,14 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 				// the page; the page under it stays dimmed and inert until it closes.
 				auto& picker = *at(child).leaf.picker;
 				const float inset = em * gfx::space::sm;
-				const float width = std::max(1.0f, cache.bodyRect.w - inset * 2);
-				const float height = std::max(1.0f, cache.bodyRect.h - inset * 2);
+				const float width = std::max(1.0f, std::round(cache.bodyRect.w - inset * 2));
+				const float height = std::max(1.0f, std::round(cache.bodyRect.h - inset * 2));
 				kinds::layoutPicker(doc_.at(child), picker, engine_.get(), fonts_, width, height);
 				YGNodeStyleSetWidth(childYoga, width);
-				YGNodeStyleSetHeight(childYoga, std::max(height, picker.minimumHeight));
+				const float layoutHeight = std::round(std::max(height, picker.minimumHeight));
+				YGNodeStyleSetHeight(childYoga, layoutHeight);
 				if (laidOut || at(child).paintDirty || YGNodeIsDirty(childYoga)
-				    || YGNodeLayoutGetWidth(childYoga) != width
-				    || YGNodeLayoutGetHeight(childYoga) != std::max(height, picker.minimumHeight))
+				    || YGNodeLayoutGetWidth(childYoga) != width || YGNodeLayoutGetHeight(childYoga) != layoutHeight)
 					YGNodeCalculateLayout(childYoga, width, YGUndefined, YGDirectionLTR);
 				gfx::fill(renderer, rect, text::rgb(0, 110));
 				targets_.bind(id, rect);
@@ -1333,12 +1354,16 @@ bool Tree::paintNode(tsp::NodeId id, float parentX, float parentY, SDL_Renderer&
 		auto clear = fill;
 		clear.a = 0;
 		// A gradient, then a solid half line at the cut, so a block clipped to a sliver there
-		// (a code block's top edge) doesn't show as a stray band.
+		// (a code block's top edge) doesn't show as a stray band. The cut is the clip's own pixel
+		// edge (the clip rounds outward): at a fractional edge the band would leave the clip's last
+		// pixel row of text uncovered.
 		const float fade = std::min(pitch * 1.5f, std::max(0.0f, bodyBottom - bodyTop)), solid = fade / 3;
-		const float edge = tail ? bodyTop : bodyBottom - solid;
-		gfx::fill(renderer, {rect.x, rect.y + edge, rect.w, solid}, fill);
-		gfx::gradientRounded(renderer,
-		                     {rect.x, rect.y + (tail ? bodyTop + solid : bodyBottom - fade), rect.w, fade - solid}, 0,
+		const float cut = tail ? std::floor(rect.y + bodyTop) : std::ceil(rect.y + bodyBottom);
+		// Inside the frame's border (scale wide), which stays drawn the full height.
+		const float inset = std::ceil(std::max(1.0f, scale)), left = rect.x + inset;
+		const float width = std::max(0.0f, rect.w - inset * 2);
+		gfx::fill(renderer, {left, tail ? cut : cut - solid, width, solid}, fill);
+		gfx::gradientRounded(renderer, {left, tail ? cut + solid : cut - fade, width, fade - solid}, 0,
 		                     tail ? std::array<SDL_Color, 4>{fill, fill, clear, clear}
 		                          : std::array<SDL_Color, 4>{clear, clear, fill, fill});
 		clips.pop();
@@ -1633,6 +1658,9 @@ Views::Views(tsp::Session& session, SDL_Renderer& renderer, text::Engine& engine
 		session_.surfaceOpened(*surface);
 }
 Views::~Views() {
+	if (pointerCaptured() && systemPointer_)
+		SDL_CaptureMouse(false);
+	imageViewer_.reset();
 	dismissHover();
 	session_.teardownAll();
 	session_.surfaceOpened = {};
@@ -1656,6 +1684,10 @@ void Views::rebind(SDL_Renderer& renderer, text::Engine& engine) {
 	if (&renderer_.get() == &renderer && &engine_.get() == &engine)
 		return;
 	dismissHover();
+	if (imageViewer_) {
+		imageViewer_->texture.reset();
+		imageViewer_->press = ImageViewer::Press::None;
+	}
 	for (auto& [id, tree] : trees_)
 		tree->rebind(engine);
 	renderer_ = renderer;
@@ -1665,11 +1697,14 @@ void Views::rebind(SDL_Renderer& renderer, text::Engine& engine) {
 }
 void Views::metricsChanged() {
 	dismissHover();
+	if (imageViewer_)
+		imageViewer_->viewport = {};
 	selection_.reset(); // Its pixel endpoints no longer address the same text.
 	for (auto& [id, tree] : trees_)
 		tree->metricsChanged();
 }
 void Views::themeChanged() {
+	closeImageViewer();
 	// Leaf caches hold runs coloured at sync time; drop them so everything re-syncs in the new
 	// palette, keeping only what the user expanded.
 	for (auto& [id, tree] : trees_)
@@ -1681,6 +1716,8 @@ void Views::openSearch() {
 	search_.show(!search_.open && hasSelection() ? selectionText() : std::string{});
 }
 bool Views::claimSearchKey(SDL_Keycode key, SDL_Keymod mod) const {
+	if (imageViewer_)
+		return key == SDLK_ESCAPE;
 #ifdef __APPLE__
 	const bool shortcut = key == SDLK_F && (mod & SDL_KMOD_GUI);
 #else
@@ -1691,6 +1728,12 @@ bool Views::claimSearchKey(SDL_Keycode key, SDL_Keymod mod) const {
 	return shortcut || searchFocused() || (search_.open && key == SDLK_F3);
 }
 bool Views::searchKey(SDL_Keycode key, SDL_Keymod mod, std::string_view typed) {
+	if (imageViewer_) {
+		if (key != SDLK_ESCAPE)
+			return false;
+		closeImageViewer();
+		return true;
+	}
 #ifdef __APPLE__
 	const bool shortcut = key == SDLK_F && (mod & SDL_KMOD_GUI);
 #else
@@ -2095,7 +2138,7 @@ bool Views::paint(const SDL_FRect& viewport, Paint mode) {
 	return animating || transitioning();
 }
 std::optional<std::vector<SDL_FRect>> Views::animatedRegions() const {
-	if (animatedElsewhere_ || transitioning())
+	if (imageViewer_ || animatedElsewhere_ || transitioning())
 		return std::nullopt;
 	std::vector<SDL_FRect> regions;
 	for (const auto& painted : painted_) {
@@ -2255,6 +2298,11 @@ void Views::scrollMainTo(float value) {
 	mainScroll_ = view.scroll;
 }
 bool Views::wheel(float x, float y, float deltaPixels) {
+	if (imageViewer_) {
+		sizeImageViewer();
+		zoomImageViewer(imageViewer_->scale * std::pow(1.15f, -deltaPixels / (fonts_.lineHeight() * 3)), x, y);
+		return true;
+	}
 	dismissHover();
 	pointer_->suppressed = true;
 	for (auto it = painted_.rbegin(); it != painted_.rend(); ++it) {

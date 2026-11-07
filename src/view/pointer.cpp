@@ -474,6 +474,10 @@ void Views::dismissHover() {
 bool Views::motion(float x, float y, bool refresh) {
 	auto& state = *pointer_;
 	state.position = {x, y};
+	if (imageViewer_) {
+		imageViewerCursor(x, y);
+		return false;
+	}
 	const bool scrollbarHover = contains(scrollbar_, x, y);
 	bool hoverChanged = scrollbarHover != scrollbarHover_;
 	scrollbarHover_ = scrollbarHover;
@@ -515,7 +519,8 @@ bool Views::motion(float x, float y, bool refresh) {
 		hand = target.kind == TargetKind::Link || target.kind == TargetKind::Action || target.kind == TargetKind::Toggle
 		    || target.kind == TargetKind::Expand || target.kind == TargetKind::Select
 		    || target.kind == TargetKind::Activate || target.kind == TargetKind::Change
-		    || target.kind == TargetKind::Number || target.kind == TargetKind::Copy || target.kind == TargetKind::Phase;
+		    || target.kind == TargetKind::Number || target.kind == TargetKind::Copy || target.kind == TargetKind::Phase
+		    || target.kind == TargetKind::Image;
 		if (!refresh && target.kind == TargetKind::Select && target.value && target.value->is_object()
 		    && target.value->contains("item")) {
 			if (state.previewItem != target.item) {
@@ -630,6 +635,7 @@ bool Views::paintHover(const SDL_FRect& viewport) {
 		if (hoverWakeDelay() != 0)
 			return false;
 		state.shown = true;
+		state.shownAt = state.position.x >= 0 && state.position.y >= 0 ? std::optional(state.position) : std::nullopt;
 		state.reveal.snap(0);
 		state.reveal.to(1, SDL_GetTicks(), 140);
 		// The HUD's todo pill opens the full checklist; other nodes bring their own `hovercard`.
@@ -667,10 +673,15 @@ bool Views::paintHover(const SDL_FRect& viewport) {
 		height = state.titleLayout.height + padY * 2;
 	}
 	height = std::min(height, std::max(1.0f, viewport.h - em * gfx::space::lg * 2));
-	const float x = clampPosition(anchor.x, viewport.x, viewport.w, width);
-	float y = anchor.y + anchor.h + gap;
+	// Under the pointer (clear of the arrow), or above it near the bottom; below the hovered
+	// element only when the pointer's place is unknown.
+	const float pointerX = state.shownAt ? state.shownAt->x : anchor.x;
+	const float below = state.shownAt ? state.shownAt->y + em * 1.25f : anchor.y + anchor.h + gap;
+	const float above = state.shownAt ? state.shownAt->y - em * 0.25f : anchor.y - gap;
+	const float x = clampPosition(pointerX, viewport.x, viewport.w, width);
+	float y = below;
 	if (y + height > viewport.y + viewport.h)
-		y = anchor.y - height - gap;
+		y = above - height;
 	y = clampPosition(y, viewport.y, viewport.h, height);
 	const SDL_FRect finalBox{x, y, width, height};
 	const float progress = state.reveal.value(SDL_GetTicks());
@@ -708,6 +719,63 @@ bool Views::click(float x, float y, std::string_view gesture) {
 }
 
 bool Views::handle(const SDL_Event& event, float toOutputX, float toOutputY) {
+	if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && !imageViewer_
+	    && (pointer_->viewerButtons & SDL_BUTTON_MASK(event.button.button))) {
+		pointer_->viewerButtons &= ~SDL_BUTTON_MASK(event.button.button);
+		return true;
+	}
+	if (imageViewer_ && handleImageViewer(event, toOutputX, toOutputY))
+		return true;
+	if (pointer_->imagePress) {
+		auto& press = *pointer_->imagePress;
+		if (event.type == SDL_EVENT_MOUSE_MOTION) {
+			const float x = event.motion.x * toOutputX, y = event.motion.y * toOutputY;
+			pointer_->position = {x, y};
+			press.moved |= std::abs(x - press.point.x) + std::abs(y - press.point.y) > fonts_.size() * 0.3f;
+			return true;
+		}
+		if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
+			const auto imagePress = std::move(*pointer_->imagePress);
+			pointer_->imagePress.reset();
+			if (systemPointer_)
+				SDL_CaptureMouse(false);
+			const float x = event.button.x * toOutputX, y = event.button.y * toOutputY;
+			pointer_->position = {x, y};
+			if (!imagePress.moved
+			    && std::abs(x - imagePress.point.x) + std::abs(y - imagePress.point.y) <= fonts_.size() * 0.3f)
+				for (auto it = painted_.rbegin(); it != painted_.rend(); ++it)
+					if (const auto target = it->get().hit(x, y)) {
+						if (target->get().image == imagePress.image)
+							openImageViewer(imagePress.image);
+						break;
+					}
+			return true;
+		}
+		if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+			pointer_->imagePress.reset();
+			if (systemPointer_)
+				SDL_CaptureMouse(false);
+		}
+	}
+	if (menu_.empty() && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
+		const float x = event.button.x * toOutputX, y = event.button.y * toOutputY;
+		for (auto it = painted_.rbegin(); it != painted_.rend(); ++it)
+			if (const auto target = it->get().hit(x, y)) {
+				if (target->get().image) {
+					pointer_->imagePress = PointerState::ImagePress{target->get().image, {x, y}};
+					dismissHover();
+					pointer_->suppressed = true;
+					if (systemPointer_)
+						SDL_CaptureMouse(true);
+					return true;
+				}
+				break;
+			}
+	}
+	if (imageViewer_
+	    && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT
+	        || event.type == SDL_EVENT_TEXT_EDITING))
+		return false;
 	const bool wasFocused = searchFocused();
 	if (!scrollbarDrag_ && !minimapDrag_ && search_.pointer(event, toOutputX, toOutputY)) {
 		if (search_.navigation) {
@@ -1365,8 +1433,8 @@ bool Tree::interactiveAt(float x, float y) const {
 }
 
 bool Views::pointerCaptured() const {
-	return pointer_->number.has_value() || selecting_ || editorDrag_.has_value() || asideDrag_.has_value()
-	    || minimapDrag_.has_value() || scrollbarDrag_.has_value();
+	return pointer_->imagePress.has_value() || pointer_->viewerButtons || pointer_->number.has_value() || selecting_
+	    || editorDrag_.has_value() || asideDrag_.has_value() || minimapDrag_.has_value() || scrollbarDrag_.has_value();
 }
 
 std::string Views::selectionText() {

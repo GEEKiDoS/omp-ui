@@ -74,7 +74,6 @@ private:
 	std::deque<DeferredWindowsKey> pendingShortcuts_;
 	std::array<bool, 256> shortcutKeys_{}, consumedShortcuts_{};
 	std::array<bool, 256> consumedKeys_{}, searchKeys_{};
-	bool imeComposing_ = false;
 	bool searchPending_ = false;
 	// Characters the last key record already carried; the WM_CHARs TranslateMessage makes from
 	// that key repeat them and are dropped (injected keys arrive with scan code 0, so the scan

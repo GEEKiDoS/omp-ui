@@ -26,6 +26,7 @@ public:
 	// Routes OS hit testing (resize edges, caption drag) for `window` to this bar, which must
 	// outlive the window.
 	void install(SDL_Window& window);
+	void setModal(bool active) { modal_ = active; }
 
 private:
 	SDL_FRect rect(Button button) const;
@@ -35,6 +36,7 @@ private:
 	SDL_FRect strip_{};
 	float toOutputX_ = 1, toOutputY_ = 1;
 	Button hovered_ = Button::None, pressed_ = Button::None;
+	bool modal_ = false;
 };
 
 } // namespace app

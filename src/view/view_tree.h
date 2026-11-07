@@ -17,6 +17,7 @@ struct YogaDeleter {
 };
 class Tree;
 struct PointerState;
+struct ImageViewer;
 struct NodeView {
 	NodeView(Tree& tree, tsp::NodeId node) : tree(tree), id(node), yoga(YGNodeNew()) {}
 	Tree& tree;
@@ -201,6 +202,9 @@ public:
 	bool wheel(float x, float y, float deltaPixels);
 	bool handle(const SDL_Event& event, float toOutputX, float toOutputY);
 	bool pointerCaptured() const;
+	bool imageViewerOpen() const { return imageViewer_ != nullptr; }
+	// Draw after all window chrome, not inside the transcript's viewport.
+	bool paintImageViewer();
 	// Find chrome belongs to this tab, not the program's prompt.
 	void openSearch();
 	bool searchFocused() const { return search_.open && search_.focused; }
@@ -241,6 +245,15 @@ private:
 	bool motion(float x, float y, bool refresh = false);
 	bool click(float x, float y, std::string_view gesture);
 	bool paintHover(const SDL_FRect& viewport);
+	void openImageViewer(std::shared_ptr<const gfx::Image> image);
+	void closeImageViewer();
+	bool handleImageViewer(const SDL_Event& event, float sx, float sy);
+	void sizeImageViewer();
+	void clampImageViewer();
+	void zoomImageViewer(float scale, float x, float y);
+	SDL_FRect imageViewerRect() const;
+	SDL_FRect imageViewerCloseRect() const;
+	void imageViewerCursor(float x, float y);
 	// Right-click menu: editing entries for an editor, else Copy/Select all plus the node's `actions.menu`.
 	struct MenuEntry {
 		enum class Kind { Cut, Copy, Paste, SelectAll, Action } kind;
@@ -270,6 +283,7 @@ private:
 	std::unordered_map<std::string, std::shared_ptr<const gfx::Image>> images_;
 	std::shared_ptr<const gfx::Image> image(std::string_view blob);
 	std::unique_ptr<PointerState> pointer_;
+	std::unique_ptr<ImageViewer> imageViewer_;
 	std::vector<std::reference_wrapper<Tree>> painted_, kept_;
 	std::optional<std::reference_wrapper<Tree>> active_, scrollOwner_;
 	std::optional<SDL_FRect> caret_;

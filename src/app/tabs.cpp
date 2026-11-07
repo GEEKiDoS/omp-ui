@@ -96,11 +96,11 @@ Tab::~Tab() {
 	pty.close(); // Reader callbacks must finish before the inbox and host disappear.
 	views.onRunningChanged = {};
 }
-bool Tab::start(int cols, int rows, std::string& error) {
+bool Tab::start(int cols, int rows, const EnvironmentOverrides& environment, std::string& error) {
 	host.rows = rows;
 	host.session.resize(cols, host.session.cellW, host.session.cellH);
 	if (!pty.start(
-	        command, cwd, cols, rows, [this](auto value) { inbox.append(value); },
+	        command, cwd, cols, rows, environment, [this](auto value) { inbox.append(value); },
 	        [this](int code) { inbox.exit(code); }, error)) {
 		exited = true;
 		exitCode = -1;

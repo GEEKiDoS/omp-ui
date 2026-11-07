@@ -106,7 +106,7 @@ endforeach()
 # The live app and transcript replay use exactly the same retained renderer.
 add_library(omp_view STATIC
 	src/text/fonts.cpp src/text/spans.cpp src/text/inline_layout.cpp
-	src/view/view_tree.cpp src/view/pointer.cpp src/view/search.cpp src/gfx/draw.cpp
+	src/view/view_tree.cpp src/view/pointer.cpp src/view/image_viewer.cpp src/view/search.cpp src/gfx/draw.cpp
 	src/kinds/leaf.cpp src/kinds/preedit.cpp src/kinds/md.cpp src/kinds/code.cpp src/kinds/ansi.cpp
 	src/kinds/data.cpp src/kinds/inline.cpp src/kinds/list_tabs.cpp src/kinds/tool_agent.cpp src/kinds/chrome.cpp
 	src/kinds/prefs.cpp src/kinds/picker.cpp src/gfx/image.cpp src/app/config.cpp src/app/drive.cpp src/app/input_posix.cpp)

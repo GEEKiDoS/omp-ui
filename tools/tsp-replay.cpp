@@ -136,7 +136,7 @@ int main(int argc, char* argv[]) {
 		std::cerr << SDL_GetError() << '\n';
 		return 1;
 	}
-	app::applyTheme(false);
+	app::applyTheme(false); // Replays use no user config or child environment overrides.
 	SdlLifetime sdl;
 	if (!TTF_Init()) {
 		std::cerr << SDL_GetError() << '\n';
@@ -242,6 +242,7 @@ int main(int argc, char* argv[]) {
 			SDL_SetRenderDrawColor(renderer.get(), text::palette::bg.r, text::palette::bg.g, text::palette::bg.b, 255);
 			SDL_RenderClear(renderer.get());
 			animating = views.paint({0, 0, static_cast<float>(w), static_cast<float>(h)});
+			animating |= views.paintImageViewer();
 			int ww = 1, wh = 1;
 			SDL_GetWindowSize(window.get(), &ww, &wh);
 			input.setCaret(views.focusedCaret(), static_cast<float>(w) / static_cast<float>(ww),

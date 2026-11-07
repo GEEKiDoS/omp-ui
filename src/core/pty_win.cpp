@@ -195,7 +195,7 @@ struct EnvironmentDeleter {
 	void operator()(wchar_t* block) const { FreeEnvironmentStringsW(block); }
 };
 
-bool childEnvironment(std::vector<wchar_t>& block, std::string& err) {
+bool childEnvironment(std::vector<wchar_t>& block, const EnvironmentOverrides& overrides, std::string& err) {
 	constexpr std::array<std::wstring_view, 9> dropped = {
 	    L"WT_SESSION", L"WT_PROFILE_ID", L"TERM_PROGRAM", L"TERM_PROGRAM_VERSION", L"TERM", L"COLORTERM",
 	    L"TMUX",       L"STY",           L"ZELLIJ"};
@@ -224,6 +224,59 @@ bool childEnvironment(std::vector<wchar_t>& block, std::string& err) {
 		block.insert(block.end(), entry.begin(), entry.end());
 		block.push_back(L'\0');
 	}
+	for (const auto& override : overrides) {
+		std::wstring name, value;
+		if (!wideString(override.name, name, err)
+		    || (override.value && !wideString(*override.value, value, err)))
+			return false;
+		// Expansion only reads the inherited block, never another override or our terminal defaults.
+		if (value.find(L"${") != std::wstring::npos) {
+			std::wstring expanded;
+			for (size_t offset = 0; offset < value.size();) {
+				const auto begin = value.find(L"${", offset);
+				if (begin == std::wstring::npos) {
+					expanded.append(value, offset);
+					break;
+				}
+				expanded.append(value, offset, begin - offset);
+				const auto end = value.find(L'}', begin + 2);
+				if (end == std::wstring::npos) {
+					expanded.append(value, begin);
+					break;
+				}
+				const std::wstring_view reference(value.data() + begin + 2, end - begin - 2);
+				for (size_t at = 0; !reference.empty() && environment.get()[at];) {
+					const std::wstring_view entry(environment.get() + at);
+					if (entry.size() > reference.size() && entry[reference.size()] == L'='
+					    && _wcsnicmp(entry.data(), reference.data(), reference.size()) == 0) {
+						expanded.append(entry.substr(reference.size() + 1));
+						break;
+					}
+					at += entry.size() + 1;
+				}
+				offset = end + 1;
+			}
+			value = std::move(expanded);
+		}
+		for (size_t offset = 0; offset < block.size();) {
+			const std::wstring_view entry(block.data() + offset);
+			const auto length = entry.size() + 1;
+			if (entry.size() > name.size() && entry[name.size()] == L'='
+			    && _wcsnicmp(entry.data(), name.data(), name.size()) == 0)
+				block.erase(block.begin() + static_cast<std::ptrdiff_t>(offset),
+				            block.begin() + static_cast<std::ptrdiff_t>(offset + length));
+			else
+				offset += length;
+		}
+		if (override.value) {
+			block.insert(block.end(), name.begin(), name.end());
+			block.push_back(L'=');
+			block.insert(block.end(), value.begin(), value.end());
+			block.push_back(L'\0');
+		}
+	}
+	if (block.empty())
+		block.push_back(L'\0');
 	block.push_back(L'\0');
 	return true;
 }
@@ -318,8 +371,8 @@ Pty::~Pty() = default;
 Pty::Pty(Pty&&) noexcept = default;
 Pty& Pty::operator=(Pty&&) noexcept = default;
 
-bool Pty::start(const std::vector<std::string>& argv, const std::string& cwd, int cols, int rows, DataFn onData,
-                ExitFn onExit, std::string& err) {
+bool Pty::start(const std::vector<std::string>& argv, const std::string& cwd, int cols, int rows,
+                const EnvironmentOverrides& overrides, DataFn onData, ExitFn onExit, std::string& err) {
 	close();
 	err.clear();
 	if (argv.empty()) {
@@ -335,7 +388,7 @@ bool Pty::start(const std::vector<std::string>& argv, const std::string& cwd, in
 	if (!wideString(cwd, directory, err))
 		return false;
 	std::vector<wchar_t> environment;
-	if (!childEnvironment(environment, err))
+	if (!childEnvironment(environment, overrides, err))
 		return false;
 	auto next = std::make_unique<State>();
 	if (!next->api.load(err))

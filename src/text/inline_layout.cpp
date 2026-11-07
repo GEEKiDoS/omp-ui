@@ -715,8 +715,9 @@ void Engine::paintSelection(const Runs& runs, const Layout& layout, float x, flo
 	}
 }
 
-void Engine::paintHighlight(const Runs& runs, const Layout& layout, float x, float y, size_t begin, size_t end,
-                            bool current, float opacity) {
+template <typename Fill>
+void Engine::rangeRects(const Runs& runs, const Layout& layout, float x, float y, size_t begin, size_t end,
+                        Fill fill) const {
 	const float lineHeight = layout.lineHeight > 0 ? layout.lineHeight : fonts_.lineHeight();
 	size_t base = 0, run = 0;
 	for (const auto& piece : layout.pieces) {
@@ -737,7 +738,15 @@ void Engine::paintHighlight(const Runs& runs, const Layout& layout, float x, flo
 		const float x1 = to == base + piece.end
 		                   ? left + piece.width
 		                   : left + padding + fonts_.width(font, value.substr(0, to - base - piece.begin));
-		const SDL_FRect rect{x0, y + static_cast<float>(piece.line) * lineHeight, std::max(1.0f, x1 - x0), lineHeight};
+		fill(SDL_FRect{x0, y + static_cast<float>(piece.line) * lineHeight, std::max(1.0f, x1 - x0), lineHeight});
+		if (begin == end)
+			break;
+	}
+}
+
+void Engine::paintHighlight(const Runs& runs, const Layout& layout, float x, float y, size_t begin, size_t end,
+                            bool current, float opacity) {
+	rangeRects(runs, layout, x, y, begin, end, [&](const SDL_FRect& rect) {
 		auto color = withAlpha(palette::warning, current ? 125 : 58);
 		color.a = static_cast<Uint8>(std::lround(static_cast<float>(color.a) * opacity));
 		gfx::fill(renderer_, rect, color);
@@ -745,12 +754,10 @@ void Engine::paintHighlight(const Runs& runs, const Layout& layout, float x, flo
 			color = withAlpha(palette::warning, static_cast<Uint8>(std::lround(220 * opacity)));
 			gfx::roundedBorder(renderer_, rect, 0, color, std::max(1.0f, fonts_.size() / 15));
 		}
-		if (begin == end)
-			break;
-	}
+	});
 }
 
-void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, float opacity) {
+void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, float opacity, ByteRange selected) {
 	if (capture) {
 		SDL_Rect rect{};
 		SDL_GetRenderClipRect(&renderer_, &rect);
@@ -790,6 +797,12 @@ void Engine::draw(const Runs& runs, const Layout& layout, float x, float y, floa
 		decorate(runs, layout, x, y, opacity);
 	if (selection_)
 		paintSelection(runs, layout, x, y, lineHeight, opacity);
+	if (selected.begin < selected.end) {
+		auto color = withAlpha(palette::accent, 65);
+		color.a = static_cast<Uint8>(std::lround(static_cast<float>(color.a) * opacity));
+		rangeRects(runs, layout, x, y, selected.begin, selected.end,
+		           [&](const SDL_FRect& rect) { gfx::fill(renderer_, rect, color); });
+	}
 	for (const auto& piece : layout.pieces) {
 		const auto& style = runs[piece.run].style;
 		const float left = x + piece.x, top = y + static_cast<float>(piece.line) * lineHeight;

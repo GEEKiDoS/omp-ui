@@ -76,23 +76,19 @@ LRESULT CALLBACK frameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
 	return CallWindowProcW(previous, hwnd, message, wParam, lParam);
 }
 
-void removeFrame(HWND hwnd) {
+void removeFrame(HWND hwnd, bool translucent) {
 	if (!GetPropW(hwnd, previousProc)) {
 		SetPropW(hwnd, previousProc, reinterpret_cast<HANDLE>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)));
 		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(frameProc));
 	}
-	if (windows10()) {
-		// Windows 10 draws a window's 1-pixel border as part of its frame, the top edge of it over
-		// a client that covers the frame; keeping the standard frame instead shows that border on
-		// all four sides. Without frame rendering neither shows (nor does the shadow, the price
-		// on Windows 10). Windows 11 draws its border outside the window.
-		const DWMNCRENDERINGPOLICY policy = DWMNCRP_DISABLED;
-		DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
-	} else {
-		// A one-pixel frame inside the client keeps DWM drawing the shadow.
-		const MARGINS margins{0, 0, 0, 1};
-		DwmExtendFrameIntoClientArea(hwnd, &margins);
-	}
+	// A one-pixel frame inside the client keeps DWM drawing the shadow. On Windows 10 that frame
+	// strip shows through a translucent (blurred) window as a white bar, so those go without frame
+	// rendering, and so without the shadow; Windows 11 draws neither the bar nor its border there.
+	const bool frame = !(translucent && windows10());
+	const DWMNCRENDERINGPOLICY policy = frame ? DWMNCRP_ENABLED : DWMNCRP_DISABLED;
+	DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+	const MARGINS margins{0, 0, 0, frame ? 1 : 0};
+	DwmExtendFrameIntoClientArea(hwnd, &margins);
 	SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
 	             SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
 }
@@ -149,7 +145,7 @@ void styleWindow(SDL_Window& window, const Theme& theme, bool translucent) {
 	const BOOL dark = text::darkPalette;
 	if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark))))
 		DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
-	removeFrame(hwnd);
+	removeFrame(hwnd, translucent && theme.transparent());
 	// Disabled again (Backdrop::None) when a reloaded theme drops it.
 	setAccent(hwnd, translucent && theme.transparent() ? theme.backdrop : Theme::Backdrop::None);
 }

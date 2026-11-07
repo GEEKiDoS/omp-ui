@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
 	std::atomic<bool> exited{false};
 	std::string err;
 	bool started = pty.start(
-	    command, "", host.session.cols, 40,
+	    command, "", host.session.cols, 40, {},
 	    [&](std::string_view bytes) {
 		    std::lock_guard lock(mutex);
 		    host.feed(bytes);

@@ -254,7 +254,8 @@ void sync(const tsp::Node& node, LeafCache& cache, text::Engine& engine, const t
 		cache.padY = chromeless ? 0 : fonts.size() * gfx::space::sm;
 		if (!node.str("lang").empty())
 			base.font = text::FontId::Mono;
-		cache.options.caret = editorRuns(node, cache.runs, base, cache.editorSpans, cache.editorSelection);
+		cache.options.caret =
+		    editorRuns(node, cache.runs, base, cache.editorSpans, cache.editorSelected, cache.editorSelection);
 		cache.label = text::toRuns(node.prop("mode"), style(text::palette::pending));
 		if (!cache.label.empty())
 			cache.labelLayout = singleLine(engine, cache.label);
@@ -475,6 +476,7 @@ LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, c
 			logo(renderer, mark);
 	} else if (node.kind == tsp::Kind::Image && cache.image) {
 		engine.drawImage(*cache.image, {rect.x, rect.y, cache.layout.width, cache.layout.height});
+		hits.addImage({rect.x, rect.y, cache.layout.width, cache.layout.height}, cache.image);
 	} else if (node.kind == tsp::Kind::Rule) {
 		const float middle = rect.y + lineHeight * 0.5f;
 		if (cache.label.empty())
@@ -516,7 +518,7 @@ LeafPaint paint(const tsp::Node& node, LeafCache& cache, text::Engine& engine, c
 				// An empty editor shows its placeholder, which gives way to an IME composition.
 				const bool composing = focused && !cache.preedit.text.empty();
 				if (!(composing && node.str("text").empty()))
-					engine.draw(cache.runs, cache.layout, x, y);
+					engine.draw(cache.runs, cache.layout, x, y, 1, cache.editorSelected);
 				cache.textOrigin = {x, y};
 				result.animating = shimmerVisible(cache.runs, cache.layout, fonts, x, y, textClip.visible);
 				if (focused && !node.flag("readonly") && result.caret) {

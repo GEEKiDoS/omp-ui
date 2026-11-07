@@ -167,12 +167,13 @@ std::filesystem::path settingsFolder() {
 	return pref ? text::utf8Path(pref.get()) : std::filesystem::path();
 }
 
-Theme applyTheme(bool userConfig, const std::filesystem::path& configFile) {
+Config applyTheme(bool userConfig, const std::filesystem::path& configFile) {
 	const auto folder = settingsFolder();
 	const bool found = !folder.empty();
 	if (found && userConfig && configFile.empty())
 		writeDefaults(folder);
-	Theme theme;
+	Config result;
+	auto& theme = result.theme;
 	const auto config = !configFile.empty() ? readJson(configFile)
 	                  : found && userConfig ? readJson(folder / "config.json")
 	                                        : json();
@@ -203,6 +204,25 @@ Theme applyTheme(bool userConfig, const std::filesystem::path& configFile) {
 		else
 			SDL_Log("config.json: \"notify\" is not \"silent\", \"sound\" or \"notify\"");
 	}
+	if (config.is_object() && config.contains("env")) {
+		const auto& environment = config["env"];
+		if (!environment.is_object())
+			SDL_Log("config.json: \"env\" is not an object");
+		else
+			for (const auto& [name, value] : environment.items()) {
+				if (!value.is_string() && !value.is_null()) {
+					SDL_Log("config.json: \"env.%s\" is not a string or null", name.c_str());
+					continue;
+				}
+				if (name.empty() || name.find('=') != std::string::npos || name.find('\0') != std::string::npos
+				    || (value.is_string() && value.get_ref<const std::string&>().find('\0') != std::string::npos)) {
+					SDL_Log("config.json: \"env.%s\" has an invalid environment name or value", name.c_str());
+					continue;
+				}
+				result.environment.push_back({name, value.is_null() ? std::nullopt
+				                                                   : std::optional(value.get<std::string>())});
+			}
+	}
 	gfx::animations = theme.animations;
 	// Test runs keep the built-in palettes even when the user edited themes/dark.json.
 	const bool builtin = theme.name == "dark" || theme.name == "light";
@@ -221,7 +241,7 @@ Theme applyTheme(bool userConfig, const std::filesystem::path& configFile) {
 		if (!builtin)
 			theme.name = "dark";
 		text::usePalette(theme.name == "dark");
-		return theme;
+		return result;
 	}
 	const auto base = file.value("base", builtin ? theme.name : std::string("dark"));
 	if (base != "dark" && base != "light")
@@ -230,7 +250,7 @@ Theme applyTheme(bool userConfig, const std::filesystem::path& configFile) {
 	applyColors(file.value("colors", json::object()), theme.name);
 	applyWindow(file.value("window", json::object()), theme);
 	applyBackground(file.value("background", json::object()), folder / "themes", theme);
-	return theme;
+	return result;
 }
 
 } // namespace app

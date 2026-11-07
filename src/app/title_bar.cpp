@@ -139,7 +139,8 @@ SDL_HitTestResult TitleBar::hitTest(SDL_Window* window, const SDL_Point* point, 
 	}
 	const float x = static_cast<float>(point->x) * bar.toOutputX_, y = static_cast<float>(point->y) * bar.toOutputY_;
 	const auto& strip = bar.strip_;
-	if (x >= strip.x && x < strip.x + strip.w && y >= strip.y && y < strip.y + strip.h && bar.at(x, y) == Button::None)
+	if (!bar.modal_ && x >= strip.x && x < strip.x + strip.w && y >= strip.y && y < strip.y + strip.h
+	    && bar.at(x, y) == Button::None)
 		return SDL_HITTEST_DRAGGABLE;
 	return SDL_HITTEST_NORMAL;
 }

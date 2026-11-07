@@ -2,6 +2,7 @@
 
 #include <SDL3/SDL_system.h>
 #include <windows.h>
+#include <imm.h>
 
 #include "text_util.h"
 
@@ -58,6 +59,16 @@ DWORD controlKeyState(bool extended) {
 	return state;
 }
 
+// An uncommitted IME composition exists (TSF IMEs answer through IMM as well).
+bool imeComposition(HWND hwnd) {
+	const HIMC context = ImmGetContext(hwnd);
+	if (!context)
+		return false;
+	const LONG bytes = ImmGetCompositionStringW(context, GCS_COMPSTR, nullptr, 0);
+	ImmReleaseContext(hwnd, context);
+	return bytes > 0;
+}
+
 } // namespace
 
 void Input::installPlatform() {
@@ -85,10 +96,6 @@ bool Input::windowsMessage(MSG& message) {
 	    SDL_GetPointerProperty(SDL_GetWindowProperties(&window_), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 	if (message.hwnd != hwnd)
 		return true;
-	if (message.message == WM_IME_STARTCOMPOSITION)
-		imeComposing_ = true;
-	if (message.message == WM_IME_ENDCOMPOSITION)
-		imeComposing_ = false;
 	const bool down = message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN;
 	const bool up = message.message == WM_KEYUP || message.message == WM_SYSKEYUP;
 	const UINT vk = static_cast<UINT>(message.wParam);
@@ -117,6 +124,9 @@ bool Input::windowsMessage(MSG& message) {
 		return true;
 	if (vk == VK_PROCESSKEY || vk == VK_PACKET || vk >= consumedKeys_.size())
 		return true;
+	// Asked of the IME itself: WM_IME_STARTCOMPOSITION/ENDCOMPOSITION may be sent straight to the
+	// window procedure rather than posted, so this hook can see one without the other.
+	const bool imeComposing = imeComposition(hwnd);
 	const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 	const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
 	const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -162,7 +172,7 @@ bool Input::windowsMessage(MSG& message) {
 	    searchPending_ || (searchFocused && searchFocused()) || (claimSearchKey && claimSearchKey(key, mod));
 	const bool modifierKey =
 	    vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL;
-	if (local && !deferred && (modifierKey || imeComposing_)) {
+	if (local && !deferred && (modifierKey || imeComposing)) {
 		searchKeys_[vk] = down;
 		recordedChars_ = 0;
 		return true; // Keep SDL's modifier/IME state without sending terminal records.
@@ -188,7 +198,7 @@ bool Input::windowsMessage(MSG& message) {
 		pending.state = controlKeyState(extended);
 		pending.repeat = down ? std::max<UINT>(1, message.lParam & 0xffff) : 1;
 		pending.search = local;
-		pending.forward = host_.get().win32InputMode && enabled_ && !imeComposing_;
+		pending.forward = host_.get().win32InputMode && enabled_ && !imeComposing;
 		if (pending.forward || (pending.search && down)) {
 			std::array<BYTE, 256> keys{};
 			GetKeyboardState(keys.data());
@@ -209,7 +219,7 @@ bool Input::windowsMessage(MSG& message) {
 	}
 	if (consumed)
 		return false;
-	if (imeComposing_ || !enabled_)
+	if (imeComposing || !enabled_)
 		return true;
 	if (down && editKey && !modifierKey) {
 		// The typed text (without disturbing dead-key state) lets a selected editor range be replaced.

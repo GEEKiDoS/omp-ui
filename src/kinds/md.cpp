@@ -536,8 +536,10 @@ bool paintMd(MdCache& cache, text::Engine& engine, const text::Fonts& fonts, SDL
 		if (block.kind == MdBlock::Kind::Rule)
 			gfx::line(renderer, {box.x, box.y + box.h * 0.5f}, {box.x + box.w, box.y + box.h * 0.5f},
 			          text::palette::border, unit);
-		else if (block.kind == MdBlock::Kind::Picture)
+		else if (block.kind == MdBlock::Kind::Picture) {
 			engine.drawImage(*block.picture, {box.x, box.y, block.layout.width, block.layout.height});
+			hits.addImage({box.x, box.y, block.layout.width, block.layout.height}, block.picture);
+		}
 		else if (block.kind == MdBlock::Kind::Table) {
 			for (const auto& cell : block.cells) {
 				const SDL_FRect cellBox{box.x + cell.x, box.y + cell.y, cell.width, cell.height};

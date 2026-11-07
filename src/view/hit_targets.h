@@ -2,8 +2,13 @@
 
 #include "core/tsp.h"
 #include "gfx/draw.h"
+#include <memory>
 #include <string_view>
 #include <vector>
+
+namespace gfx {
+class Image;
+}
 
 namespace view {
 
@@ -21,6 +26,7 @@ enum class TargetKind {
 	Hover,
 	Copy,
 	Phase,
+	Image,
 	Block
 };
 struct HitTarget {
@@ -29,6 +35,7 @@ struct HitTarget {
 	TargetKind kind;
 	std::string_view item;
 	std::optional<json> value;
+	std::shared_ptr<const gfx::Image> image;
 };
 
 // Paint order is hit order: parents first, their sub-targets and children after.
@@ -50,6 +57,11 @@ public:
 		rect = gfx::intersect(rect, clip_);
 		if (!frozen_ && rect.w > 0 && rect.h > 0)
 			entries_.push_back({rect, owner ? owner : node_, kind, item, std::move(value)});
+	}
+	void addImage(SDL_FRect rect, std::shared_ptr<const gfx::Image> image) {
+		rect = gfx::intersect(rect, clip_);
+		if (!frozen_ && image && rect.w > 0 && rect.h > 0)
+			entries_.push_back({rect, node_, TargetKind::Image, {}, {}, std::move(image)});
 	}
 	const std::vector<HitTarget>& entries() const { return entries_; }
 	std::optional<std::reference_wrapper<const HitTarget>> hit(float x, float y) const {

@@ -36,8 +36,9 @@ SDL_Color toned(const tsp::Node& node, SDL_Color fallback) {
 } // namespace
 
 size_t editorRuns(const tsp::Node& node, text::Runs& runs, const text::RunStyle& base, std::vector<EditorSpan>& spans,
-                  std::optional<std::pair<size_t, size_t>> selection) {
+                  text::ByteRange& selected, std::optional<std::pair<size_t, size_t>> selection) {
 	spans.clear();
+	selected = {};
 	append(runs, text::toRuns(node.prop("prompt"), {.color = text::palette::accent}));
 	size_t visible = 0;
 	for (const auto& run : runs)
@@ -64,14 +65,11 @@ size_t editorRuns(const tsp::Node& node, text::Runs& runs, const text::RunStyle&
 		int fx;
 	};
 	std::vector<Decoration> decor;
-	// The caret is a run boundary only where ghost text or a selection edge goes: a split word
-	// loses its kerning, so the letters after the caret would visibly shift.
+	// The caret is a run boundary only where ghost text goes, and a selection is painted over the
+	// runs rather than cut into them: a split word loses its kerning, so the letters after the
+	// cut would visibly shift.
 	const bool hasGhost = !node.str("ghost").empty() || node.prop("ghost").is_array();
 	std::vector<size_t> cuts{0, value.size()};
-	if (selectionBegin < selectionEnd) {
-		cuts.push_back(selectionBegin);
-		cuts.push_back(selectionEnd);
-	}
 	if (hasGhost)
 		cuts.push_back(caret);
 	for (const auto& item : node.prop("decor")) {
@@ -131,8 +129,6 @@ size_t editorRuns(const tsp::Node& node, text::Runs& runs, const text::RunStyle&
 				if (d.fx)
 					style.fx = d.fx;
 			}
-		if (selectionBegin < selectionEnd && selectionBegin <= begin && end <= selectionEnd)
-			style.bg = text::withAlpha(text::palette::accent, 65);
 		if (!hidden) {
 			if (begin < caret && caret < end)
 				result = visible + (caret - begin);
@@ -141,6 +137,18 @@ size_t editorRuns(const tsp::Node& node, text::Runs& runs, const text::RunStyle&
 			visible += end - begin;
 		}
 	}
+	// The selection in visible bytes; hidden stretches at either end drop out.
+	if (selectionBegin < selectionEnd)
+		for (const auto& span : spans) {
+			const size_t spanEnd = span.source + span.length;
+			if (spanEnd <= selectionBegin || span.source >= selectionEnd)
+				continue;
+			const size_t from = span.visible + (std::max(selectionBegin, span.source) - span.source);
+			const size_t to = span.visible + (std::min(selectionEnd, spanEnd) - span.source);
+			if (selected.begin >= selected.end)
+				selected.begin = from;
+			selected.end = to;
+		}
 	return result;
 }
 

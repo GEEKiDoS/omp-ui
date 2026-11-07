@@ -28,7 +28,7 @@ struct Tab {
 	Tab(std::string cwd, std::string title, std::vector<std::string> command, Uint32 wakeEvent, SDL_Renderer& renderer,
 	    text::Engine& engine, const text::Fonts& fonts);
 	~Tab();
-	bool start(int cols, int rows, std::string& error);
+	bool start(int cols, int rows, const EnvironmentOverrides& environment, std::string& error);
 	bool drain();
 	void setVisible(bool value);
 	// Takes the current palette for omp (hello's `dark`, OSC 10/11 answers).
@@ -42,6 +42,7 @@ struct Tab {
 	std::vector<std::string> command;
 	int running = 0;
 	bool attention = false, exited = false, visible = false;
+	bool rememberFolder = true; // Temporary workspaces never enter the recent-folders list.
 	int exitCode = 0;
 	uint64_t logGeneration = 0;
 	// omp's last bell or notification message since the app last looked (empty message: a bell).

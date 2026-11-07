@@ -10,10 +10,11 @@ namespace kinds {
 struct EditorSpan {
 	size_t visible, source, length;
 };
-// Returns the caret's byte offset in the visible, decorated runs.
+// Returns the caret's byte offset in the visible, decorated runs; `selected` receives the
+// highlighted range in those bytes (for Engine::draw), which never splits a run.
 // `selection` (UTF-16 from/to) overrides the node's anchor/cursor highlight with a terminal-side one.
 size_t editorRuns(const tsp::Node& node, text::Runs& runs, const text::RunStyle& base, std::vector<EditorSpan>& spans,
-                  std::optional<std::pair<size_t, size_t>> selection = std::nullopt);
+                  text::ByteRange& selected, std::optional<std::pair<size_t, size_t>> selection = std::nullopt);
 // The UTF-16 source offset for a byte offset in the visible runs (clamped into the text).
 size_t editorSourceOffset(const tsp::Node& node, const std::vector<EditorSpan>& spans, size_t visible);
 SDL_Color cardFill(const tsp::Node& node);

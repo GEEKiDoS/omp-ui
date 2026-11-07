@@ -88,7 +88,7 @@ struct DataCache {
 	float keyWidth = 0, cellSize = 0, plotHeight = 0;
 	double low = 0, high = 1;
 	SDL_Color fill = text::palette::accent;
-	bool synced = false, inlineKv = false, heatmap = false, spark = false;
+	bool synced = false, inlineKv = false, heatmap = false, spark = false, toolOutput = false;
 };
 
 bool dataKind(tsp::Kind kind);

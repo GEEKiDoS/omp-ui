@@ -513,14 +513,20 @@ void measureTable(DataCache& cache, text::Engine& engine, const text::Fonts& fon
 void measureFolds(DataCache& cache, text::Engine& engine, const text::Fonts& fonts, float width) {
 	const float em = fonts.size(), unit = em / 15, indent = em * 1.2f, arrow = em;
 	const float pad = em * gfx::space::sm, gap = em * gfx::space::sm;
-	// Tree rows are selectable items; JSON rows read as code, at close to its line pitch.
+	// Tool data shares code's filled block and text inset; standalone data keeps its compact gutter.
+	const bool toolData = cache.toolOutput && (cache.kind == tsp::Kind::Json || cache.kind == tsp::Kind::Tree);
 	const float rowPad = cache.kind == tsp::Kind::Json ? em * 0.1f : pad;
+	const size_t frame = cache.boxes.size();
+	if (toolData)
+		cache.boxes.push_back({{}, em / 3, text::palette::surface2});
+	if (toolData)
+		cache.height += em * (gfx::space::sm + gfx::space::lg);
 	for (size_t i = 0; i < cache.folds.size();) {
 		const auto& row = cache.folds[i];
-		const float inset = std::min(pad, width * 0.5f);
+		const float inset = toolData ? 0 : std::min(pad, width * 0.5f);
 		const float left = std::min(width - inset, inset + static_cast<float>(row.depth) * indent);
 		const float end = std::max(left, width - inset);
-		float textX = std::min(end, left + arrow + gap);
+		float textX = std::min(end, left + arrow + (toolData ? 0 : gap));
 		float textHeight = fonts.lineHeight();
 		if (row.icon) {
 			auto& icon = cache.texts[*row.icon];
@@ -556,6 +562,11 @@ void measureFolds(DataCache& cache, text::Engine& engine, const text::Fonts& fon
 		}
 		cache.height += height;
 		i = row.branch && !row.expanded ? row.end : i + 1;
+	}
+	if (toolData) {
+		cache.height += em * gfx::space::lg;
+		cache.boxes[frame].rect = {0, em * gfx::space::sm, width, cache.height - em * gfx::space::sm};
+		cache.height += em * gfx::space::sm;
 	}
 }
 
@@ -661,8 +672,10 @@ void syncData(const tsp::Node& node, DataCache& cache, text::Engine& engine, con
 	for (auto& row : cache.folds)
 		if (row.changed)
 			folded.emplace(std::move(row.key), row.expanded);
+	const bool toolOutput = cache.toolOutput;
 	forgetData(cache);
 	cache = DataCache{};
+	cache.toolOutput = toolOutput;
 	cache.kind = node.kind;
 	cache.revision = node.rev;
 	cache.fontSize = fonts.size();

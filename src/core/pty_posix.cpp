@@ -105,7 +105,7 @@ bool equalName(std::string_view left, std::string_view right) {
 	return true;
 }
 
-std::vector<std::string> childEnvironment() {
+std::vector<std::string> childEnvironment(const EnvironmentOverrides& overrides) {
 	constexpr std::array<std::string_view, 9> dropped = {
 	    "WT_SESSION", "WT_PROFILE_ID", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM", "COLORTERM",
 	    "TMUX",       "STY",           "ZELLIJ"};
@@ -131,6 +131,39 @@ std::vector<std::string> childEnvironment() {
 	result.emplace_back("TERM=xterm-256color");
 	result.emplace_back("COLORTERM=truecolor");
 	result.emplace_back("TERM_PROGRAM=omp-ui");
+	for (const auto& override : overrides) {
+		std::erase_if(result, [&](const std::string& entry) {
+			return std::string_view(entry).substr(0, entry.find('=')) == override.name;
+		});
+		if (!override.value)
+			continue;
+		auto& entry = result.emplace_back(override.name);
+		entry += '=';
+		const std::string_view value = *override.value;
+		// Expansion only reads the inherited environment, not overrides or terminal defaults.
+		for (size_t offset = 0; offset < value.size();) {
+			const auto begin = value.find("${", offset);
+			if (begin == std::string_view::npos) {
+				entry.append(value.substr(offset));
+				break;
+			}
+			entry.append(value.substr(offset, begin - offset));
+			const auto end = value.find('}', begin + 2);
+			if (end == std::string_view::npos) {
+				entry.append(value.substr(begin));
+				break;
+			}
+			const auto reference = value.substr(begin + 2, end - begin - 2);
+			for (size_t index = 0; inherited[index]; ++index) {
+				const std::string_view variable(inherited[index]);
+				if (variable.substr(0, variable.find('=')) == reference) {
+					entry.append(variable.substr(reference.size() + 1));
+					break;
+				}
+			}
+			offset = end + 1;
+		}
+	}
 	return result;
 }
 
@@ -289,8 +322,8 @@ Pty::~Pty() = default;
 Pty::Pty(Pty&&) noexcept = default;
 Pty& Pty::operator=(Pty&&) noexcept = default;
 
-bool Pty::start(const std::vector<std::string>& argv, const std::string& cwd, int cols, int rows, DataFn onData,
-                ExitFn onExit, std::string& err) {
+bool Pty::start(const std::vector<std::string>& argv, const std::string& cwd, int cols, int rows,
+                const EnvironmentOverrides& overrides, DataFn onData, ExitFn onExit, std::string& err) {
 	close();
 	err.clear();
 	if (argv.empty()) {
@@ -301,7 +334,7 @@ bool Pty::start(const std::vector<std::string>& argv, const std::string& cwd, in
 	Fd errorRead, errorWrite;
 	if (!makePipe(errorRead, errorWrite, false, err) || !makePipe(next->wakeRead, next->wakeWrite, true, err))
 		return false;
-	auto environment = childEnvironment();
+	auto environment = childEnvironment(overrides);
 	// These mutable pointer arrays exist only for the execvp/environ C boundary;
 	// the pointed-to strings stay owned by argv and environment until exec.
 	std::vector<char*> arguments;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/pty.h"
+
 #include <filesystem>
 #include <string>
 
@@ -30,12 +32,23 @@ struct Theme {
 	bool transparent() const;
 };
 
+struct Config {
+	Theme theme;
+	// UTF-8 overrides; ${NAME} is expanded from omp-ui's inherited environment when spawning.
+	EnvironmentOverrides environment;
+};
+
 // Where config.json, themes/ and recent.json live: the per-user settings folder
 // (%APPDATA%\omp\omp-ui\, ~/.local/share/omp/omp-ui/, ~/Library/Application Support/omp/omp-ui/).
 // Empty when unknown.
 std::filesystem::path settingsFolder();
 
-// Chooses and applies the theme at startup, before any window exists.
+// Reads the configuration and applies its theme, at startup or on reload.
+//
+// The optional `"env": {"NAME": "value", "OTHER": null}` sets/removes child environment
+// variables. Strings expand `${NAME}` from omp-ui's own environment (unknown names: empty),
+// never from other overrides. Names are case-insensitive on Windows, case-sensitive on POSIX.
+// Reloaded overrides only affect sessions started afterwards, including restarted tabs.
 //
 // The theme is named by the OMP_UI_THEME environment variable, else by `"theme"` in
 // `config.json` in the settings folder (which may also set `"dimAfter"`, `"animations"` and
@@ -58,6 +71,6 @@ std::filesystem::path settingsFolder();
 // setting, as starting points. Without it (hidden test runs, tsp-replay) only OMP_UI_THEME
 // counts, and `dark`/`light` are always the built-ins. An explicit `configFile` is read even
 // without `userConfig`, but never creates defaults there or in the user's settings folder.
-Theme applyTheme(bool userConfig, const std::filesystem::path& configFile = {});
+Config applyTheme(bool userConfig, const std::filesystem::path& configFile = {});
 
 } // namespace app

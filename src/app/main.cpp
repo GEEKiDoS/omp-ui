@@ -14,6 +14,7 @@
 #include "composition.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -25,6 +26,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -80,6 +82,7 @@ bool showErrors = true;
 struct SidebarMenu {
 	enum class Kind {
 		PickFolder, // New session in a folder chosen with the picker.
+		TempSession, // New session in a fresh temporary folder.
 		NewSession, // New session in `folder`.
 		Heading,
 		ShowFolder, // Open `folder` in the system file manager.
@@ -91,6 +94,7 @@ struct SidebarMenu {
 		std::string label, folder;
 		size_t tab = 0;
 		bool showPath = false; // Recent folders: the name, then the full path dimmed.
+		bool rememberFolder = true;
 	};
 	SDL_FRect rect;
 	std::vector<Entry> entries;
@@ -109,6 +113,34 @@ std::string fileUrl(const std::filesystem::path& folder) {
 			url += std::format("%{:02X}", ch);
 	}
 	return url;
+}
+
+std::optional<std::string> temporaryFolder() {
+	std::error_code error;
+	const auto temporary = std::filesystem::temp_directory_path(error);
+	if (error) {
+		SDL_Log("Cannot find temporary folder: %s", error.message().c_str());
+		return std::nullopt;
+	}
+	const auto root = temporary / "omp-ui";
+	std::filesystem::create_directories(root, error);
+	if (error) {
+		SDL_Log("Cannot create temporary session folder %s: %s", text::pathText(root).c_str(),
+		        error.message().c_str());
+		return std::nullopt;
+	}
+	const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+	const auto name = std::format("session-{:%Y%m%d-%H%M%S}", now);
+	for (size_t suffix = 1;; ++suffix) {
+		const auto folder = root / (suffix == 1 ? name : std::format("{}-{}", name, suffix));
+		if (std::filesystem::create_directory(folder, error))
+			return text::pathText(folder);
+		if (error && error != std::errc::file_exists) {
+			SDL_Log("Cannot create temporary session folder %s: %s", text::pathText(folder).c_str(),
+			        error.message().c_str());
+			return std::nullopt;
+		}
+	}
 }
 
 struct Window {
@@ -240,7 +272,8 @@ int main(int argc, char* argv[]) {
 	SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
 		return fail(SDL_GetError());
-	auto theme = app::applyTheme(drivePath.empty(), configFile); // Hidden runs never create the user's config.
+	auto config = app::applyTheme(drivePath.empty(), configFile); // Hidden runs never create the user's config.
+	auto& theme = config.theme;
 	// The theme's background picture, decoded once and drawn in every window.
 	std::optional<gfx::Image> wallpaper;
 	const auto loadWallpaper = [&] {
@@ -576,15 +609,18 @@ int main(int argc, char* argv[]) {
 		if (const auto found = findWindow(id))
 			retarget(found->get());
 	};
-	auto addTab = [&](Window& window, const std::string& cwd, std::vector<std::string> argv, bool activate) {
+	auto addTab = [&](Window& window, const std::string& cwd, std::vector<std::string> argv, bool activate,
+	                  bool rememberFolder = true) {
 		cancelDrag();
-		recent.add(cwd);
+		if (rememberFolder)
+			recent.add(cwd);
 		auto tab = std::make_unique<app::Tab>(cwd, std::string{}, std::move(argv), wakeEvent, *window.renderer,
 		                                      *window.engine, fonts);
+		tab->rememberFolder = rememberFolder;
 		tab->views.setSystemPointer(drivePath.empty());
 		tabMetrics(window, *tab);
 		error.clear();
-		tab->start(tab->host.session.cols, tab->host.rows, error);
+		tab->start(tab->host.session.cols, tab->host.rows, config.environment, error);
 		if (!error.empty())
 			SDL_Log("Tab start: %s", error.c_str());
 		const bool first = window.tabs.empty();
@@ -697,10 +733,11 @@ int main(int argc, char* argv[]) {
 		auto previous = std::move(window.tabs[window.active]);
 		auto tab = std::make_unique<app::Tab>(previous->cwd, previous->title, previous->command, wakeEvent,
 		                                      *window.renderer, *window.engine, fonts);
+		tab->rememberFolder = previous->rememberFolder;
 		tab->views.setSystemPointer(drivePath.empty());
 		tabMetrics(window, *tab);
 		error.clear();
-		tab->start(tab->host.session.cols, tab->host.rows, error);
+		tab->start(tab->host.session.cols, tab->host.rows, config.environment, error);
 		window.tabs[window.active] = std::move(tab);
 		window.tabs[window.active]->setVisible(true);
 		retarget(window);
@@ -731,7 +768,7 @@ int main(int argc, char* argv[]) {
 		if (window.tabs.empty())
 			chooseFolder(window);
 		else
-			addTab(window, window.tabs[window.active]->cwd, command, true);
+			addTab(window, window.tabs[window.active]->cwd, command, true, window.tabs[window.active]->rememberFolder);
 	};
 	auto moveTab = [&](SDL_WindowID from, size_t index, SDL_WindowID to, size_t insertion, bool activate) {
 		cancelDrag();
@@ -912,7 +949,7 @@ int main(int argc, char* argv[]) {
 	// window's framebuffer alpha is fixed when it is created (SDL's swap chain has already shown
 	// opaque frames), so a window created opaque says in its caption to restart.
 	auto reloadConfig = [&] {
-		theme = app::applyTheme(drivePath.empty(), configFile);
+		config = app::applyTheme(drivePath.empty(), configFile);
 		loadWallpaper();
 		for (auto& window : windows) {
 			app::styleWindow(*window->window, theme, window->translucent);
@@ -928,6 +965,12 @@ int main(int argc, char* argv[]) {
 		}
 	};
 	auto pointerEvent = [&](Window& window, const SDL_Event& event, float outputX, float outputY) {
+		if (!window.tabs.empty() && window.tabs[window.active]->views.imageViewerOpen()
+		    && (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+		        || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL)) {
+			window.dirty |= window.tabs[window.active]->views.handle(event, outputX, outputY);
+			return true;
+		}
 		float x = 0, y = 0, logicalX = 0, logicalY = 0;
 		if (event.type == SDL_EVENT_MOUSE_MOTION) {
 			logicalX = event.motion.x;
@@ -983,8 +1026,12 @@ int main(int argc, char* argv[]) {
 				case SidebarMenu::Kind::PickFolder:
 					chooseFolder(window);
 					break;
+				case SidebarMenu::Kind::TempSession:
+					if (const auto folder = temporaryFolder())
+						addTab(window, *folder, command, true, false);
+					break;
 				case SidebarMenu::Kind::NewSession:
-					addTab(window, entry.folder, command, true);
+					addTab(window, entry.folder, command, true, entry.rememberFolder);
 					break;
 				case SidebarMenu::Kind::ShowFolder:
 					if (!SDL_OpenURL(fileUrl(text::utf8Path(entry.folder)).c_str()))
@@ -1072,6 +1119,7 @@ int main(int argc, char* argv[]) {
 					SidebarMenu menu{{}, {}, std::nullopt};
 					if (hit.action == app::SidebarAction::NewMenu) {
 						menu.entries.push_back({Kind::PickFolder, "Open session in other folder…"});
+						menu.entries.push_back({Kind::TempSession, "New session in temporary folder"});
 						if (!recent.list().empty())
 							menu.entries.push_back({Kind::Heading, "Recent"});
 						for (const auto& folder : recent.list())
@@ -1082,7 +1130,8 @@ int main(int argc, char* argv[]) {
 						menu.entries.push_back({Kind::ReloadConfig, "Reload config"});
 					} else if (hit.index < window.tabs.size()) {
 						const auto& tab = *window.tabs[hit.index];
-						menu.entries.push_back({Kind::NewSession, "New session in this folder", tab.cwd});
+						menu.entries.push_back(
+						    {Kind::NewSession, "New session in this folder", tab.cwd, 0, false, tab.rememberFolder});
 						menu.entries.push_back({Kind::ShowFolder, "Show folder", tab.cwd});
 						menu.entries.push_back({Kind::CloseTab, "Close tab", {}, hit.index});
 					}
@@ -1391,6 +1440,12 @@ int main(int argc, char* argv[]) {
 				zone(middle, bottom, DropZone::Paste, "Paste path", "Into this tab's prompt");
 			} else
 				zone(top, bottom, DropZone::NewTab, "Open in a new tab", "A folder starts a new session there");
+		}
+		const bool imageOpen = !window.tabs.empty() && window.tabs[window.active]->views.imageViewerOpen();
+		window.titleBar.setModal(imageOpen);
+		if (imageOpen) {
+			window.animating |= window.tabs[window.active]->views.paintImageViewer();
+			animated.reset();
 		}
 		return animated;
 	};

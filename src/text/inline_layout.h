@@ -42,6 +42,10 @@ struct Selection {
 	SDL_FPoint from, to;
 	bool word = false;
 };
+// A byte range in a Runs' concatenated text; empty when begin >= end.
+struct ByteRange {
+	size_t begin = 0, end = 0;
+};
 struct TextDeleter {
 	void operator()(TTF_Text* value) const { TTF_DestroyText(value); }
 };
@@ -54,7 +58,9 @@ public:
 	Engine(SDL_Renderer& renderer, Fonts& fonts);
 	bool valid() const { return static_cast<bool>(engine_); }
 	Layout layout(const Runs& runs, const LayoutOptions& options) const;
-	void draw(const Runs& runs, const Layout& layout, float x, float y, float opacity = 1);
+	// `selected` is filled behind its glyphs (an editor selection): a highlight that isn't a run
+	// boundary, since a word split into runs loses its kerning and the letters after the cut shift.
+	void draw(const Runs& runs, const Layout& layout, float x, float y, float opacity = 1, ByteRange selected = {});
 	Hit hit(const Runs& runs, const Layout& layout, float x, float y);
 	void clear();
 	// After a full paint: releases picture textures not drawn for a few seconds (scrolled away),
@@ -99,6 +105,9 @@ private:
 	};
 	const Cached* cached(FontId font, SDL_Color color, std::string_view value);
 	void paintSelection(const Runs& runs, const Layout& layout, float x, float y, float lineHeight, float opacity);
+	// Calls `fill(rect)` for each piece's share of [begin, end); an empty range marks its position once.
+	template <typename Fill>
+	void rangeRects(const Runs& runs, const Layout& layout, float x, float y, size_t begin, size_t end, Fill fill) const;
 	SDL_Renderer& renderer_;
 	Fonts& fonts_;
 	std::unique_ptr<TTF_TextEngine, EngineDeleter> engine_;

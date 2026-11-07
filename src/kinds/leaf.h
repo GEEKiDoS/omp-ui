@@ -31,9 +31,11 @@ struct LeafCache {
 	// (0: no limit), so long blocks need not lay out what can't be seen.
 	float budget = 0;
 	Preedit preedit;
-	// Editors: visible-run ↔ source mapping, where the text was last drawn, and a terminal-side
-	// selection (UTF-16 from/to) for select-all/cut/copy, which omp's editor has no notion of.
+	// Editors: visible-run ↔ source mapping, the highlighted range in the runs, where the text was
+	// last drawn, and a terminal-side selection (UTF-16 from/to) for select-all/cut/copy, which
+	// omp's editor has no notion of.
 	std::vector<EditorSpan> editorSpans;
+	text::ByteRange editorSelected;
 	SDL_FPoint textOrigin{};
 	std::optional<std::pair<size_t, size_t>> editorSelection;
 	// Editors: where the caret was last drawn and since when (it blinks for a while after moving).
